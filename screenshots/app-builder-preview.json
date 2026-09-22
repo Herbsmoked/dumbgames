@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "VEILBREAK",
+      "hasCanvas": true,
+      "bodyTextLen": 26,
+      "bodyTextHash": "fe8fc50a03e56c3cbac18834a1069435ccb580d5fa4705199108fef9a69dba11",
+      "bodyTextPrefix": "VEILBREAK BINDING THE VEIL",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "VEILBREAK",
+      "hasCanvas": true,
+      "bodyTextLen": 26,
+      "bodyTextHash": "fe8fc50a03e56c3cbac18834a1069435ccb580d5fa4705199108fef9a69dba11",
+      "bodyTextPrefix": "VEILBREAK BINDING THE VEIL",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}
