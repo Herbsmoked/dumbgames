@@ -1,0 +1,76 @@
+Build a premium isometric ARPG at Diablo Immortal quality. Playable in-browser, 60fps, juicy combat, deep systems. Original world, same feel as Sanctuary vs hell.
+
+TECH
+- Isometric or high-angle 3D. Camera follow, zoom, screen shake, hit-stop on crits/elites.
+- Entity system: player, monsters, projectiles, pickups, chests, shrines, portals.
+- Data-driven: JSON tables for items, affixes, monsters, skills, dungeons, quests.
+- Object pooling for loot/projectiles. Spatial hash for collisions.
+- Save: class, level, paragon, inventory, stash, quest flags, rift best.
+
+CLASSES (all 6 selectable)
+Barbarian, Wizard, Demon Hunter, Monk, Necromancer, Crusader.
+Each: 4 primary/secondary skills, 2 utility, 1 ultimate, 1 dash. Resource (fury/mana/hatred/spirit/essence/wrath).
+Skill ranks + one rune/variant per skill. Cooldowns, i-frames on dash, invuln frames on ult.
+
+COMBAT
+- Click-to-move + skill hotkeys 1-4 Q E R + potion.
+- Pack density high. Champions with affixes (extra life, fast, molted, jailer, vortex, electrified).
+- Elite packs drop better loot. Boss telegraphs, phases, adds.
+- Damage numbers (white/yellow/orange crit), death explosions, corpse physics.
+- Crowd control: stun, freeze, knockback, pull. CC diminishing returns.
+- Toughness vs damage: armor, all-res, dodge, life on hit.
+
+DYNAMIC LOOT
+Tiers: Normal / Magic / Rare / Legendary / Set.
+Every drop rolls:
+- item slot + base (helm, chest, shoulders, gloves, pants, boots, belt, amulet, 2 rings, main, off)
+- item power / required level
+- 2–6 affixes from weighted pools (primary: +mainstat, +vita, +crit, +cdr, +area, +elite dmg; secondary: resist, life, gold, pickup radius)
+- legendary power unique to that item (build-defining)
+- 0–3 sockets
+Sets: 2/4/6 bonuses. Compare overlay on hover. Legendary beam + ground label.
+Salvage → materials. Upgrade / reforge / extract legendary power at blacksmith + mystic.
+Smart loot biases toward class. Pity: guaranteed legendary every N elite packs.
+
+PROGRESSION
+- XP → level 1–60. Then Paragon (infinite: +core, +offense, +defense, +utility).
+- Skill unlocks by level. Respec in town.
+- Legendary gems: drop in rifts, socket, upgrade with copies + materials. Rank 1–10 effects.
+- Difficulty: Normal → Hell I–IV → Inferno. Monster HP/dmg scale. Better drop rates.
+
+WORLD + STORY
+Town hub: stash, vendor, blacksmith, mystic, bounty board, rift stone, class trainer.
+Campaign: 4 acts. Each act: 6–8 quests, 2 dungeons, 1 act boss, 1 story twist.
+Tone: last stand of humanity, fallen angels, demon lords, betrayal, artifacts of power.
+Side quests + bounties (kill X, collect, escort, shrine). Codex lore drops.
+
+DUNGEONS
+Procedural: rooms + corridors + loops from tile modules.
+Biome set: crypt, cathedral, wilderness, ice cavern, burning hell, flooded ruins.
+Features: elite room, shrine (speed/dmg/loot), res shrine, chest room, secret wall, event (horde/ritual).
+Exit portal after boss. Map fog of war.
+
+ENDGAME
+- Challenge Rifts: 10-min timer, density + progress bar, rift guardian. Higher tier = more HP/dmg + loot.
+- Greater-style personal best + leaderboard.
+- World boss on timer in overworld slice.
+- 4-player raid boss with enrage, wipe mechanics, unique set piece.
+- Weekly: bounty cache, rift cache, seasonal theme (extra affix, mutated monsters).
+- Helliquary-style ladder: kill bosses in order to unlock next.
+
+UI
+HP + resource orbs, 6 skill slots + potion, buff bar, minimap, quest tracker.
+Loot toast, legendary full-screen flash once.
+Inventory 10x6 + cube. Stash tabs. Vendor buyback.
+Pause, settings (shake, numbers, auto-pickup radius).
+
+AUDIO/JUICE
+Heavy hits, crit sting, legendary drop sting + choir, rift open bass.
+Potion chug, town ambient, hell drones.
+
+SHIP FIRST
+1) Character select + one class (Barbarian) fully skilled
+2) Town + first dungeon + first boss
+3) Full loot pipeline with legendaries
+4) Then other classes, acts, rifts, paragon, gems
+Make it feel expensive: weighty attacks, generous loot, constant forward motion.
