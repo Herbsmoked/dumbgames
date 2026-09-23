@@ -103,12 +103,18 @@ export class PaperdollView {
       dt,
       time: performance.now() / 1000,
     });
+    this.figure.root.position.set(this.figure.shakeX, this.figure.sinkY, 0);
     this.renderer.render(this.scene, this.camera);
   }
 
   dispose() {
     this.ro?.disconnect();
     this.ro = null;
+    try {
+      this.renderer.forceContextLoss?.();
+    } catch {
+      /* ignore */
+    }
     this.renderer.dispose();
     this.figure = null;
   }

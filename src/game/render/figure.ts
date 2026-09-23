@@ -142,6 +142,10 @@ export class Figure {
   hitFlash = 0;
   dissolve = 1;
   deadT = 0;
+  /** Local hit-shake. Never written into world X — the engine places the actor. */
+  shakeX = 0;
+  /** Death sink, applied by the engine on top of world Y. */
+  sinkY = 0;
   private cloakX = 0.1;
   private walk = 0;
   iceShell: THREE.Mesh | null = null;
@@ -158,6 +162,25 @@ export class Figure {
 
   playAttack() {
     this.attackT = 0.32;
+  }
+
+  /** Death clip must not leave a live ghost after a checkpoint revive. */
+  revive() {
+    this.deadT = 0;
+    this.dissolve = 1;
+    this.sinkY = 0;
+    this.shakeX = 0;
+    this.attackT = 0;
+    this.root.rotation.x = 0;
+    this.root.scale.y = 1;
+    this.root.traverse((o) => {
+      const mesh = o as THREE.Mesh;
+      const mat = mesh.material as THREE.MeshStandardMaterial | undefined;
+      if (mat && "opacity" in mat) {
+        mat.opacity = 1;
+        mat.transparent = false;
+      }
+    });
   }
 
   flash() {
@@ -211,7 +234,8 @@ export class Figure {
 
   update(pose: FigurePose) {
     const dt = pose.dt;
-    this.root.position.y = 0;
+    this.shakeX = 0;
+    this.sinkY = 0;
     if (pose.whirlwind) this.root.rotation.y += dt * 16;
     else this.root.rotation.y = pose.facing + Math.PI;
     if (this.hitFlash > 0) {
@@ -221,9 +245,7 @@ export class Figure {
         m.emissive.setHex(on ? 0xfff2e0 : 0x000000);
         m.emissiveIntensity = on ? 0.85 : (m.userData.emi0 ?? 0);
       }
-      this.root.position.x = Math.sin(this.hitFlash * 48) * 0.035;
-    } else {
-      this.root.position.x = 0;
+      this.shakeX = Math.sin(this.hitFlash * 48) * 0.035;
     }
     if (this.glowT > 0) {
       this.glowT -= dt;
@@ -237,7 +259,7 @@ export class Figure {
       this.deadT += dt;
       const k = Math.min(1, this.deadT / 0.5);
       this.root.rotation.x = k * 1.25;
-      this.root.position.y = -k * 0.18;
+      this.sinkY = -k * 0.18;
       if (this.deadT > 8) {
         this.dissolve = Math.max(0, this.dissolve - dt * 0.7);
         this.root.scale.y = Math.max(0.05, this.dissolve);

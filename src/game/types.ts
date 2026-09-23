@@ -345,4 +345,5 @@ export interface UiSnapshot {
   channel: { id: string; t: number; max: number } | null;
   lowHp: boolean;
   portrait: string;
+  pc: boolean;
 }

@@ -1,6 +1,8 @@
 import * as THREE from "three";
 import type { Quality } from "./quality";
 
+/** HMR of this module still requires a full page reload — textures are not reloaded every frame. */
+
 export type MatId =
   | "floor"
   | "stone"

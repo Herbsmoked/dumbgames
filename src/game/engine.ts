@@ -2,9 +2,10 @@
 import * as THREE from "three";
 import { CLASSES, CLASS_LIST, DIFFICULTY, GEMS, INVENTORY_SIZE, LEGENDARIES, MAX_LEVEL, MONSTERS, NPCS, QUESTS, SETS, SHRINES, SLOT_LABEL, STASH_SIZE, TOWN_NAME, defaultLoadout, defaultPrimary, defaultUlt, iconFor, roleOf, xpToNext } from "./catalog";
 import { GameAudio } from "./audio";
-import { generateDungeon, generateTown, isWalkable, resolveWalls } from "./dungeon";
+import { generateDungeon, generateMarches, generateTown, isWalkable, resolveWalls } from "./dungeon";
 import { Input } from "./input";
 import { formatAffix, identify, randomGem, rarityFor, rollItem, Rng, salvageValue } from "./loot";
+import { isPc } from "./platform";
 import { detectQuality, FigureFactory, figureKindFor, PaperdollView, PostPipeline, TextureKit, VfxWorld, WorldKit } from "./render";
 import { addXp, createHero, loadSave, persistSave } from "./save";
 
@@ -162,8 +163,13 @@ export class Veilbreak {
   particles = [];
   numbers = [];
   dest = null;
+  clickGo = null;
+  dash = null;
   aim = new THREE.Vector3();
   tmp = new THREE.Vector3();
+  ndc = new THREE.Vector2();
+  aimHit = new THREE.Vector3();
+  upTmp = new THREE.Vector3(0, 1, 0);
   ray = new THREE.Raycaster();
   plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   trauma = 0;
@@ -176,7 +182,7 @@ export class Veilbreak {
   interact = null;
   interactEnt = null;
   loadPct = 0;
-  loading = true;
+  loading = false;
   potionCd = 0;
   potionHot = 0;
   potionHotLeft = 0;
@@ -221,6 +227,8 @@ export class Veilbreak {
   aimHoldT = 0;
   camLookX = 0;
   camLookZ = 0;
+  checkpoint = { x: 0, z: 0 };
+  roomKey = "";
   paperdoll = null;
   quality = detectQuality();
   texKit = new TextureKit(detectQuality());
@@ -228,6 +236,11 @@ export class Veilbreak {
   figures = null;
   vfx = null;
   world = null;
+  reticle = null;
+  pc = true;
+  crowdMul = 1;
+  _pendingClass = null;
+  _pendingContinue = null;
   constructor(canvas, overlay, pushUI) {
     this.canvas = canvas;
     this.overlay = overlay;
@@ -266,20 +279,48 @@ export class Veilbreak {
     this.scene.fog = new THREE.FogExp2(0x1c1814, 0.01);
     this.scene.add(this.wallsGroup);
     this.scene.add(this.decorGroup);
+    const ret = new THREE.Mesh(
+      new THREE.RingGeometry(0.16, 0.24, 28),
+      new THREE.MeshBasicMaterial({
+        color: 0xe6c87a,
+        transparent: true,
+        opacity: 0.78,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      }),
+    );
+    ret.rotation.x = -Math.PI / 2;
+    ret.position.y = 0.07;
+    ret.visible = false;
+    this.scene.add(ret);
+    this.reticle = ret;
     this.post = new PostPipeline(this.renderer, this.scene, this.camera, this.quality);
     this.reduced =
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    this.pc = isPc();
     window.addEventListener("resize", this.onResize);
     document.addEventListener("visibilitychange", this.onVis);
     this.wireControlsTest();
   }
   async start() {
-    await this.preload();
     this.loading = false;
     this.running = true;
     this.clock.start();
     this.loop();
     this.emit();
+    await this.preload();
+    this.loadPct = 1;
+    this.emit();
+    if (this._pendingClass) {
+      const p = this._pendingClass;
+      this._pendingClass = null;
+      this.chooseClass(p.id, p.name);
+    }
+    if (this._pendingContinue != null) {
+      const i = this._pendingContinue;
+      this._pendingContinue = null;
+      this.continueHero(i);
+    }
   }
   dispose() {
     this.running = false;
@@ -298,6 +339,11 @@ export class Veilbreak {
     this.input.setVirtualStick(x, y);
   }
   chooseClass(id, name) {
+    if (!this.figures) {
+      this._pendingClass = { id, name };
+      this.toast("Binding the veil…");
+      return;
+    }
     this.audio.unlock();
     this.audio.ui();
     this.hero = createHero(this.save, id, name);
@@ -319,6 +365,11 @@ export class Veilbreak {
     this.emit();
   }
   continueHero(i) {
+    if (!this.figures) {
+      this._pendingContinue = i;
+      this.toast("Binding the veil…");
+      return;
+    }
     this.audio.unlock();
     const h = this.save.characters[i];
     if (!h) return;
@@ -337,9 +388,38 @@ export class Veilbreak {
     this.emit();
   }
   openPanel(p) {
+    this.releaseInput();
     this.panel = this.panel === p ? "none" : p;
     if (p !== "dialogue") this.dialogue = null;
     this.emit(true);
+  }
+  releaseInput() {
+    this.input.setHudPrimary(false);
+    this.input.setHudUlt(false);
+    this.input.setHudPotion(false);
+    for (let i = 0; i < 4; i++) this.input.setHudSkill(i, false);
+    this.input.pointer.down = false;
+    this.input.pointer.right = false;
+    this.aimingSlot = -1;
+    this.aimHoldT = 0;
+    this.channel = null;
+    this.dest = null;
+    this.clickGo = null;
+    this.vfx?.clearAim();
+    if (this.player) {
+      this.player.vx = 0;
+      this.player.vz = 0;
+    }
+  }
+  snapCamera() {
+    const p = this.player;
+    if (!p) return;
+    const off = this.camOff;
+    this.camLookX = p.x;
+    this.camLookZ = p.z;
+    this.camLagT = 0;
+    this.camera.position.set(p.x + off.x, off.y, p.z + off.z);
+    this.camera.lookAt(p.x, 1.28, p.z);
   }
   equip(uid) {
     const h = this.hero;
@@ -570,6 +650,13 @@ export class Veilbreak {
       this.quest("enter", "town");
       return;
     }
+    if (kind === "marches") {
+      this.rift = null;
+      this.loadArea(generateMarches((h.level * 13) ^ 7));
+      this.audio.startDrone(false);
+      this.quest("enter", "marches");
+      return;
+    }
     if (kind === "rift") {
       const lv = generateDungeon({
         seed: (Date.now() ^ h.level) >>> 0,
@@ -586,7 +673,7 @@ export class Veilbreak {
         tier: riftTier,
         time: 180,
         progress: 0,
-        goal: 36 + riftTier * 8,
+        goal: 24 + riftTier * 4,
       };
       this.loadArea(lv);
       this.audio.rift();
@@ -644,7 +731,11 @@ export class Veilbreak {
   }
   talkChoice(id) {
     this.dialogue = null;
-    if (id === "x") this.panel = "none";
+    if (id === "x") {
+      this.panel = "none";
+      this.dest = null;
+      this.clickGo = null;
+    }
     if (id.startsWith("enter:")) this.enterPortal(id.slice(6));
     if (id === "panel:blacksmith") this.panel = "blacksmith";
     if (id === "panel:mystic") this.panel = "mystic";
@@ -732,19 +823,34 @@ export class Veilbreak {
     this.persist();
     this.emit(true);
   }
-  respawn() {
+  respawn(toTown = true) {
     if (!this.hero || !this.player) return;
     this.hero.stats.deaths += 1;
+    this.releaseInput();
     this.hp = this.maxHp;
     this.resource = this.maxResource * 0.4;
+    const stay = toTown === false && this.level && !this.level.isTown;
     this.player.dead = false;
+    this.player.corpse = false;
     this.player.hp = this.hp;
     this.screen = "playing";
-    this.loadArea(generateTown());
+    if (!stay) {
+      this.loadArea(generateTown());
+    } else {
+      this.player.x = this.checkpoint.x;
+      this.player.z = this.checkpoint.z;
+      this.player.vx = 0;
+      this.player.vz = 0;
+      this.player.figure?.revive();
+      if (this.player.figure)
+        this.player.figure.root.position.set(this.player.x, 0, this.player.z);
+      this.snapCamera();
+    }
     this.persist();
     this.emit(true);
   }
   onResize = () => {
+    this.pc = isPc();
     const w = window.innerWidth;
     const h = window.innerHeight;
     const aspect = w / Math.max(1, h);
@@ -789,7 +895,9 @@ export class Veilbreak {
     this.clearLevel();
     this.level = level;
     this.dest = null;
+    this.clickGo = null;
     this.channel = null;
+    this.dash = null;
     this.vfx?.clear();
     this.world.dress(level, this.vfx);
     this.ground = this.world.ground;
@@ -808,6 +916,9 @@ export class Veilbreak {
       this.player.hp = this.hp;
       this.player.maxHp = this.maxHp;
     }
+    this.checkpoint = { x: level.playerX, z: level.playerZ };
+    this.roomKey = "";
+    this.snapCamera();
   }
   clearLevel() {
     for (const e of this.ents) {
@@ -890,6 +1001,7 @@ export class Veilbreak {
     e.knockLock = 0;
     e.windup = 0;
     e.windupKind = "";
+    e.leash = false;
     e.ranged = id === "cultist";
     if (e.boss) e.phase = 1;
     this.ents.push(e);
@@ -1031,6 +1143,7 @@ export class Veilbreak {
       frame: 0,
       anim: 0,
       dead: false,
+      hopY: 0,
       cc: {
         type: "",
         t: 0,
@@ -1076,8 +1189,7 @@ export class Veilbreak {
     const step = 1 / 60;
     let n = 0;
     while (this.acc >= step && n < 5) {
-      if (this.hitstop > 0) this.hitstop -= step;
-      else this.sim(step);
+      this.sim(step);
       this.acc -= step;
       n++;
     }
@@ -1159,69 +1271,112 @@ export class Veilbreak {
         return;
       }
     }
+    this.hitstop = Math.max(0, this.hitstop - dt);
     this.worldBossIn = Math.max(0, this.worldBossIn - dt);
+    this.pc = isPc();
+    let liveMons = 0;
+    for (const e of this.ents)
+      if (e.kind === "monster" && e.team === 2 && !e.dead && !e.corpse) liveMons++;
+    this.crowdMul = liveMons > 12 ? 0.5 : 1;
+    this.vfx?.setCrowd?.(this.crowdMul);
     const camFwd = this.camFwd.set(-1, 0, -1).normalize();
     const camRight = this.camRight
-      .crossVectors(camFwd, new THREE.Vector3(0, 1, 0))
+      .crossVectors(camFwd, this.upTmp.set(0, 1, 0))
       .normalize();
     this.pickAim(a);
+    if (this.pc && a.pointerJust && this.aimingSlot < 0 && this.panel === "none")
+      this.onWorldClick(this.pickAtAim(1.2));
+    const hover = this.pickAtAim(1.4);
+    if (hover?.kind === "monster" && hover.team === 2 && !hover.dead && !hover.corpse)
+      this.target = hover;
     let mx = 0,
       mz = 0;
-    if (Math.hypot(a.moveX, a.moveY) > 0.12) {
-      mx = camRight.x * a.moveX + camFwd.x * -a.moveY;
-      mz = camRight.z * a.moveX + camFwd.z * -a.moveY;
-      this.dest = null;
-    } else if (a.rightDown || a.forceMove)
-      this.dest = {
-        x: this.aim.x,
-        z: this.aim.z,
-      };
-    else if (a.pointerDown && this.aimingSlot < 0)
-      this.dest = {
-        x: this.aim.x,
-        z: this.aim.z,
-      };
-    if (this.dest) {
-      const dx = this.dest.x - p.x;
-      const dz = this.dest.z - p.z;
-      const m = Math.hypot(dx, dz);
-      if (m < 0.35) this.dest = null;
-      else {
-        mx = dx / m;
-        mz = dz / m;
+    const stickMag = Math.hypot(a.moveX, a.moveY);
+    const steering = stickMag > 0.08;
+    if (this.dash) {
+      this.tickDash(dt);
+    } else {
+      if (steering) {
+        mx = camRight.x * a.moveX + camFwd.x * -a.moveY;
+        mz = camRight.z * a.moveX + camFwd.z * -a.moveY;
+        this.dest = null;
+        this.clickGo = null;
+      } else if (a.forceMove)
+        this.dest = {
+          x: this.aim.x,
+          z: this.aim.z,
+        };
+      else if (!this.pc && a.pointerDown && this.aimingSlot < 0)
+        this.dest = {
+          x: this.aim.x,
+          z: this.aim.z,
+        };
+      if (this.clickGo?.ent && !this.clickGo.ent.dead) {
+        const ce = this.clickGo.ent;
+        this.dest = { x: ce.x, z: ce.z };
+        const reach =
+          ce.kind === "pickup" ? 1.5 : ce.kind === "npc" ? 2.6 : 3.4;
+        if (Math.hypot(ce.x - p.x, ce.z - p.z) <= reach) {
+          if (ce.kind === "pickup") this.collect(ce);
+          else this.doInteract(ce);
+          this.clickGo = null;
+          this.dest = null;
+        }
       }
-    }
-    if (this.channel?.id === "whirlwind" || this.channel?.id === "bloodspin") {
-      const fast = h.skillRunes.whirlwind || h.skillRunes.bloodspin;
-      mx *= fast ? 0.85 : 0.55;
-      mz *= fast ? 0.85 : 0.55;
-    }
-    const spMul =
-      (this.hasBuff("speed") || this.hasBuff("sprint") ? 1.4 : 1) *
-      (this.hasBuff("archon") || this.hasBuff("wrath") || this.ultActive > 0
-        ? 1.12
-        : 1);
-    const spd = p.speed * spMul;
-    if ((mx || mz) && !a.forceMove) {
-      const m = Math.hypot(mx, mz) || 1;
-      p.vx = (mx / m) * spd;
-      p.vz = (mz / m) * spd;
-      if (this.aimingSlot < 0) {
+      if (this.dest) {
+        const dx = this.dest.x - p.x;
+        const dz = this.dest.z - p.z;
+        const m = Math.hypot(dx, dz);
+        if (m < 0.35) this.dest = null;
+        else {
+          mx = dx / m;
+          mz = dz / m;
+        }
+      }
+      let moveMul = 1;
+      if (this.channel?.id === "whirlwind" || this.channel?.id === "bloodspin") {
+        const fast = h.skillRunes.whirlwind || h.skillRunes.bloodspin;
+        moveMul *= fast ? 0.85 : 0.55;
+      } else if (this.aimingSlot >= 0) moveMul *= 0.85;
+      const spMul =
+        (this.hasBuff("speed") || this.hasBuff("sprint") ? 1.4 : 1) *
+        (this.hasBuff("archon") || this.hasBuff("wrath") || this.ultActive > 0
+          ? 1.12
+          : 1);
+      const spd = p.speed * spMul * moveMul;
+      let wantVx = 0,
+        wantVz = 0;
+      if (mx || mz) {
+        const m = Math.hypot(mx, mz) || 1;
+        wantVx = (mx / m) * spd;
+        wantVz = (mz / m) * spd;
+      }
+      const tau = wantVx || wantVz ? 0.08 : 0.1;
+      const k = 1 - Math.exp(-dt / tau);
+      p.vx += (wantVx - p.vx) * k;
+      p.vz += (wantVz - p.vz) * k;
+      if (!wantVx && !wantVz && Math.hypot(p.vx, p.vz) < 0.08) {
+        p.vx = 0;
+        p.vz = 0;
+      }
+      if (this.aimingSlot >= 0) {
+        const { ux, uz } = this.aimDir(true);
+        p.facing = Math.atan2(-ux, -uz);
+        this.yaw = p.facing;
+      } else if (steering && (p.vx || p.vz)) {
+        p.facing = Math.atan2(-p.vx, -p.vz);
+        this.yaw = p.facing;
+      } else if (a.primary) {
+        const { ux, uz } = this.aimDir(true);
+        p.facing = Math.atan2(-ux, -uz);
+        this.yaw = p.facing;
+      } else if (this.dest && (p.vx || p.vz)) {
         p.facing = Math.atan2(-p.vx, -p.vz);
         this.yaw = p.facing;
       }
-    } else if (a.forceMove && (mx || mz)) {
-      const m = Math.hypot(mx, mz) || 1;
-      p.vx = (mx / m) * spd;
-      p.vz = (mz / m) * spd;
-      p.facing = Math.atan2(-p.vx, -p.vz);
-      this.yaw = p.facing;
-    } else {
-      p.vx = 0;
-      p.vz = 0;
+      this.speed = Math.hypot(p.vx, p.vz);
+      if (this.hitstop <= 0) this.moveEnt(p, dt);
     }
-    this.speed = Math.hypot(p.vx, p.vz);
-    this.moveEnt(p, dt);
     if (a.potionJust) this.drink();
     if (a.ultimateJust) this.fireUlt();
     const { primary, equipped } = this.kit();
@@ -1247,7 +1402,8 @@ export class Veilbreak {
         }
         if (this.aimingSlot === i && a.skills[i]) {
           this.aimHoldT += dt;
-          const charged = this.aimHoldT >= 0.55;
+          const chargeT = Math.max(0, this.aimHoldT - 0.12);
+          const charged = chargeT >= 0.55;
           const { ux, uz } = this.aimDir(true);
           p.facing = Math.atan2(-ux, -uz);
           const shape =
@@ -1256,9 +1412,9 @@ export class Veilbreak {
               : sk.kind === "melee"
                 ? "cone"
                 : "circle";
-          const hold = Math.min(1, this.aimHoldT / 0.7);
-          const range = sk.range * (0.72 + hold * 0.4);
-          const rad = (sk.radius || 2) * (0.8 + hold * 0.35);
+          const hold = Math.min(1, chargeT / 0.55);
+          const range = sk.range * (0.85 + hold * 0.25);
+          const rad = (sk.radius || 2) * (0.9 + hold * 0.25);
           this.vfx?.setAim(
             shape,
             p.x,
@@ -1270,8 +1426,12 @@ export class Veilbreak {
           );
         }
         if (a.skillReleased[i] && this.aimingSlot === i) {
-          const hold = Math.min(1, this.aimHoldT / 0.7);
-          this.castSkill(sk, true, hold);
+          const chargeT = Math.max(0, this.aimHoldT - 0.12);
+          const chargeMul =
+            this.aimHoldT < 0.12
+              ? 1
+              : 1 + Math.min(1, chargeT / 0.55) * 0.35;
+          this.castSkill(sk, true, chargeMul);
           this.aimingSlot = -1;
           this.aimHoldT = 0;
           this.vfx?.clearAim();
@@ -1305,14 +1465,17 @@ export class Veilbreak {
           );
       }
     }
-    const wantAtk =
-      (a.primary || (a.pointerDown && !a.forceMove && !a.rightDown)) &&
-      !a.forceMove;
+    const wantAtk = a.primary && !a.forceMove && !this.dash;
     if (p.atkCd <= 0 && wantAtk) {
       const t =
         this.nearestInCone(primary.range + 1.2, p.facing, Math.PI / 4) ??
         this.nearestEnemy(primary.range + 1.2);
-      if (t) this.autoAttack(t, primary);
+      if (t) {
+        const d = Math.hypot(t.x - p.x, t.z - p.z);
+        if (d < primary.range + 1.2)
+          p.facing = Math.atan2(-(t.x - p.x), -(t.z - p.z));
+        this.autoAttack(t, primary);
+      }
     }
     if (this.potionHot > 0) p.figure?.glow(0x44ff88, 0.12);
     const look = this.nearestEnemy(10);
@@ -1328,6 +1491,7 @@ export class Veilbreak {
     this.projectiles(dt);
     this.pickups(dt);
     this.bossLogic(dt);
+    this.noteRoom();
     this.interactScan();
     if (a.interactJust && this.interactEnt) this.doInteract(this.interactEnt);
     this.trauma = Math.max(0, this.trauma - dt * 1.8);
@@ -1339,13 +1503,112 @@ export class Veilbreak {
     p.maxHp = this.maxHp;
   }
   pickAim(a) {
-    this.ray.setFromCamera(
-      new THREE.Vector2(a.pointerNdcX, a.pointerNdcY),
-      this.camera,
-    );
-    const hit = new THREE.Vector3();
-    this.ray.ray.intersectPlane(this.plane, hit);
-    this.aim.copy(hit);
+    this.ndc.set(a.pointerNdcX, a.pointerNdcY);
+    this.ray.setFromCamera(this.ndc, this.camera);
+    this.aimHit.set(0, 0, 0);
+    if (this.ray.ray.intersectPlane(this.plane, this.aimHit)) this.aim.copy(this.aimHit);
+  }
+  pickAtAim(maxD) {
+    let best = null;
+    let bd = maxD;
+    for (const e of this.ents) {
+      if (e === this.player || e.dead) continue;
+      if (e.corpse && e.kind === "monster") continue;
+      if (
+        !["npc", "chest", "shrine", "portal", "prop", "pickup", "monster"].includes(
+          e.kind,
+        )
+      )
+        continue;
+      const d = Math.hypot(e.x - this.aim.x, e.z - this.aim.z);
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    }
+    return best;
+  }
+  inCombat() {
+    const p = this.player;
+    if (!p) return false;
+    for (const e of this.ents) {
+      if (e.kind !== "monster" || e.team !== 2 || e.dead || e.corpse) continue;
+      if (Math.hypot(e.x - p.x, e.z - p.z) < 12) return true;
+    }
+    return false;
+  }
+  onWorldClick(picked) {
+    const p = this.player;
+    if (!p || !picked) return;
+    if (picked.kind === "monster" && picked.team === 2 && !picked.dead) {
+      this.target = picked;
+      return;
+    }
+    if (picked.kind === "pickup") {
+      if (Math.hypot(picked.x - p.x, picked.z - p.z) <= 1.5) this.collect(picked);
+      else {
+        this.clickGo = { x: picked.x, z: picked.z, ent: picked };
+        this.dest = { x: picked.x, z: picked.z };
+      }
+      return;
+    }
+    if (this.inCombat()) return;
+    if (["npc", "chest", "shrine", "portal"].includes(picked.kind)) {
+      const reach = picked.kind === "npc" ? 2.6 : 3.4;
+      if (Math.hypot(picked.x - p.x, picked.z - p.z) <= reach)
+        this.doInteract(picked);
+      else {
+        this.clickGo = { x: picked.x, z: picked.z, ent: picked };
+        this.dest = { x: picked.x, z: picked.z };
+      }
+    }
+  }
+  tickDash(dt) {
+    const d = this.dash;
+    const p = this.player;
+    if (!d || !p || !this.level) {
+      this.dash = null;
+      return;
+    }
+    const prev = d.t / d.max;
+    d.t += dt;
+    const u = Math.min(1, d.t / d.max);
+    const stepDist = d.dist * (u - prev);
+    p.x += d.ux * stepDist;
+    p.z += d.uz * stepDist;
+    const r = resolveWalls(p.x, p.z, p.r, this.level.walls);
+    p.x = r.x;
+    p.z = r.z;
+    if (!isWalkable(this.level, p.x, p.z)) {
+      p.x -= d.ux * stepDist;
+      p.z -= d.uz * stepDist;
+      d.t = d.max;
+    }
+    p.hopY = d.peak * 4 * u * (1 - u);
+    p.vx = d.ux * (d.dist / d.max);
+    p.vz = d.uz * (d.dist / d.max);
+    p.facing = Math.atan2(-d.ux, -d.uz);
+    this.yaw = p.facing;
+    this.speed = Math.hypot(p.vx, p.vz);
+    p.iFrames = Math.max(0, d.max - d.t);
+    if (p.figure) p.figure.root.position.set(p.x, p.hopY, p.z);
+    else if (p.sprite) p.sprite.position.set(p.x, 0.02 + p.hopY, p.z);
+    if (p.shadow) p.shadow.position.set(p.x, 0.05, p.z);
+    if (u >= 1 || d.t >= d.max) {
+      p.hopY = 0;
+      p.iFrames = 0;
+      p.vx = 0;
+      p.vz = 0;
+      this.dealRadius(p.x, p.z, d.radius, d.dmg, { knock: d.knock });
+      if (d.rune && (d.skillId === "leap" || d.skillId === "warleap"))
+        this.dealRadius(p.x, p.z, d.radius + 0.6, d.dmg * 0.5);
+      this.trauma += d.skillId === "leap" || d.skillId === "warleap" ? 0.45 : 0.28;
+      this.hitstop = Math.max(this.hitstop, 0.028);
+      this.post?.punch(0.0024, 0.12);
+      this.vfx?.leap(p.x, p.z);
+      this.vfx?.shock(p.x, p.z, 0xffaa44);
+      this.dash = null;
+    }
   }
   moveEnt(e, dt) {
     if (!this.level) return;
@@ -1374,7 +1637,7 @@ export class Veilbreak {
     }
     e.x = nx;
     e.z = nz;
-    if (e.figure) e.figure.root.position.set(e.x, 0, e.z);
+    if (e.figure) e.figure.root.position.set(e.x, e.hopY ?? 0, e.z);
     else if (e.sprite) e.sprite.position.set(e.x, 0.02, e.z);
     if (e.shadow) e.shadow.position.set(e.x, 0.05, e.z);
     if (e.mesh && !e.figure) e.mesh.position.set(e.x, e.mesh.position.y, e.z);
@@ -1401,6 +1664,10 @@ export class Veilbreak {
   drink() {
     const h = this.hero;
     if (this.potionCd > 0 || this.potionHot > 0) return;
+    if (this.hp >= this.maxHp - 1) {
+      this.toast("Already whole");
+      return;
+    }
     if ((h.potionCount ?? 0) <= 0) {
       this.toast("No potions");
       return;
@@ -1496,11 +1763,12 @@ export class Veilbreak {
       return;
     const rank = h.skillRanks[skill.id] ?? 1;
     const rune = !!h.skillRunes[skill.id];
+    const chargeMul = Math.max(1, charge);
     const dmgMul =
       (0.9 + rank * 0.12) *
       this.outDmg() *
       (this.ultActive > 0 ? 1.45 : 1) *
-      (0.78 + 0.32 * charge);
+      chargeMul;
     const cdr = this.stat("cdr") / 100;
     if (skill.charges) {
       this.skillCharges[skill.id] =
@@ -1517,37 +1785,36 @@ export class Veilbreak {
       skill.id === "leap" ||
       skill.id === "warleap"
     ) {
+      const holdBoost = Math.max(0, chargeMul - 1);
       const dist =
         skill.dash *
         (rune ? 1.12 : 1) *
         (this.hasPower("dashIframes") ? 1.1 : 1) *
-        (0.75 + 0.4 * charge);
-      p.x += ux * dist;
-      p.z += uz * dist;
-      const r = resolveWalls(p.x, p.z, p.r, this.level.walls);
-      p.x = r.x;
-      p.z = r.z;
-      p.iFrames =
-        skill.id === "leap" || skill.id === "warleap" || skill.id === "charge"
-          ? 0.32 * (this.hasPower("dashIframes") ? 1.4 : 1)
-          : 0;
-      this.camLagT = 0.16;
-      this.dealRadius(p.x, p.z, skill.radius * (0.85 + 0.3 * charge), skill.damage * dmgMul, {
+        (1 + holdBoost);
+      const dur =
+        skill.duration ||
+        (skill.id === "leap" || skill.id === "warleap" ? 0.28 : 0.22);
+      const peak =
+        skill.id === "leap" || skill.id === "warleap" ? 1.1 : 0;
+      this.dash = {
+        ux,
+        uz,
+        dist,
+        t: 0,
+        max: dur,
+        peak,
+        radius: skill.radius * (0.85 + 0.3 * Math.min(1, chargeMul)),
+        dmg: skill.damage * dmgMul,
         knock: skill.id === "charge" ? 5 : 3,
-      });
-      if (rune && (skill.id === "leap" || skill.id === "warleap"))
-        this.dealRadius(
-          p.x,
-          p.z,
-          skill.radius + 0.6,
-          skill.damage * dmgMul * 0.5,
-        );
-      this.trauma += skill.id === "leap" || skill.id === "hota" ? 0.45 : 0.28;
-      if (skill.id === "leap" || skill.id === "hota") {
-        this.hitstop = Math.max(this.hitstop, 0.032);
-        this.post?.punch(0.0024, 0.12);
-      }
-      this.vfx?.leap(p.x, p.z);
+        skillId: skill.id,
+        rune,
+        landed: false,
+      };
+      p.iFrames = dur * (this.hasPower("dashIframes") ? 1.4 : 1);
+      p.facing = Math.atan2(-ux, -uz);
+      this.yaw = p.facing;
+      this.camLagT = 0.16;
+      this.dest = null;
       p.figure?.playAttack();
       this.audio.swing();
       return;
@@ -1837,13 +2104,23 @@ export class Veilbreak {
         }
       }
       const spawnD = Math.hypot(e.x - (e.spawnX ?? e.x), e.z - (e.spawnZ ?? e.z));
-      if (spawnD > 25) {
-        e.x = e.spawnX;
-        e.z = e.spawnZ;
-        e.hp = e.maxHp;
-        e.vx = 0;
-        e.vz = 0;
-        this.moveEnt(e, 0);
+      if (spawnD > 25) e.leash = true;
+      if (e.leash) {
+        const hx = (e.spawnX ?? e.x) - e.x;
+        const hz = (e.spawnZ ?? e.z) - e.z;
+        const hm = Math.hypot(hx, hz);
+        if (hm < 0.45) {
+          e.leash = false;
+          e.hp = e.maxHp;
+          e.vx = 0;
+          e.vz = 0;
+          this.moveEnt(e, 0);
+          continue;
+        }
+        e.vx = (hx / hm) * e.speed;
+        e.vz = (hz / hm) * e.speed;
+        e.facing = Math.atan2(-e.vx, -e.vz);
+        this.moveEnt(e, dt);
         continue;
       }
       let dx = p.x - e.x;
@@ -2079,7 +2356,16 @@ export class Veilbreak {
     }
   }
   collect(e) {
+    if (!e || e.dead || e.taken) return;
     const h = this.hero;
+    if (e.item && h.inventory.length >= 60) {
+      if (!e.fullNoted) {
+        this.toast("Inventory full");
+        e.fullNoted = true;
+      }
+      return;
+    }
+    e.taken = true;
     if (e.globe) {
       const heal = this.maxHp * 0.14;
       this.hp = Math.min(this.maxHp, this.hp + heal);
@@ -2133,6 +2419,28 @@ export class Veilbreak {
     for (const e of this.ents) {
       if (!e.boss || e.dead) continue;
       e.telegraph = (e.telegraph ?? 0) - dt;
+      if ((e.bossWind ?? 0) > 0) {
+        e.bossWind -= dt;
+        if (e.bossWind <= 0) {
+          const pattern = e.bossPat ?? 0;
+          const tx = e.bossTx ?? p.x;
+          const tz = e.bossTz ?? p.z;
+          if (!e.dead) {
+            if (pattern === 0)
+              this.dealRadius(tx, tz, 2.8, (e.dmg ?? 20) * 1.8, { stun: 0.5 });
+            else if (pattern === 1)
+              this.dealRadius(e.x, e.z, 4.2, (e.dmg ?? 20) * 1.4, { knock: 5 });
+            else {
+              const ux = p.x - e.x,
+                uz = p.z - e.z,
+                m = Math.hypot(ux, uz) || 1;
+              this.fireEnemyBolt(e, ux / m, uz / m);
+              this.dealRadius(tx, tz, 1.6, (e.dmg ?? 20) * 1.1);
+            }
+          }
+          e.bossWind = 0;
+        }
+      }
       const hpPct = e.hp / e.maxHp;
       if (hpPct < 0.3 && !e.enraged) {
         e.enraged = true;
@@ -2150,70 +2458,124 @@ export class Veilbreak {
       if (hpPct < 0.33 && (e.phase ?? 1) < 3) {
         e.phase = 3;
         this.toast(e.name + " tears the floor.");
-        this.vfx?.warnCircle(e.x, e.z, 6, 0.9);
-        this.dealRadius(e.x, e.z, 6, 40, { knock: 6 });
+        this.vfx?.warnCircle(e.x, e.z, 5.2, 0.7);
+        e.bossPat = 1;
+        e.bossTx = e.x;
+        e.bossTz = e.z;
+        e.bossWind = 0.7;
+        e.telegraph = 1.5;
       }
-      if ((e.telegraph ?? 0) <= 0) {
+      if ((e.telegraph ?? 0) <= 0 && (e.bossWind ?? 0) <= 0) {
         const pattern = (e.bossAtk ?? 0) % 3;
         e.bossAtk = (e.bossAtk ?? 0) + 1;
-        e.telegraph = e.enraged ? 1.6 : e.phase === 3 ? 2.2 : 3.0;
-        const tx = p.x;
-        const tz = p.z;
-        if (pattern === 0) {
-          this.vfx?.warnCircle(tx, tz, 2.8, 0.9);
-          window.setTimeout(() => {
-            if (!e.dead)
-              this.dealRadius(tx, tz, 2.8, (e.dmg ?? 20) * 1.8, { stun: 0.5 });
-          }, 900);
-        } else if (pattern === 1) {
-          this.vfx?.warnCircle(e.x, e.z, 4.2, 1.05);
-          window.setTimeout(() => {
-            if (!e.dead)
-              this.dealRadius(e.x, e.z, 4.2, (e.dmg ?? 20) * 1.4, { knock: 5 });
-          }, 1050);
-        } else {
-          this.vfx?.warnCircle(tx, tz, 1.6, 0.75);
-          window.setTimeout(() => {
-            if (!e.dead) {
-              const ux = p.x - e.x,
-                uz = p.z - e.z,
-                m = Math.hypot(ux, uz) || 1;
-              this.fireEnemyBolt(e, ux / m, uz / m);
-              this.dealRadius(tx, tz, 1.6, (e.dmg ?? 20) * 1.1);
-            }
-          }, 750);
-        }
+        e.bossPat = pattern;
+        e.bossTx = p.x;
+        e.bossTz = p.z;
+        const wind = pattern === 0 ? 0.7 : pattern === 1 ? 0.8 : 0.62;
+        e.bossWind = wind;
+        e.telegraph = (e.enraged ? 0.4 : 0.65) + wind;
+        if (pattern === 0) this.vfx?.warnCircle(p.x, p.z, 2.8, wind);
+        else if (pattern === 1) this.vfx?.warnCircle(e.x, e.z, 4.2, wind);
+        else this.vfx?.warnCircle(p.x, p.z, 1.6, wind);
       }
     }
+  }
+  noteRoom() {
+    const lv = this.level;
+    const p = this.player;
+    if (!lv || !p || lv.isTown) return;
+    for (const r of lv.rooms) {
+      if (Math.abs(p.x - r.x) > r.w / 2 - 0.2 || Math.abs(p.z - r.z) > r.d / 2 - 0.2) continue;
+      const key = r.x + "," + r.z;
+      if (this.roomKey && this.roomKey !== key)
+        this.checkpoint = { x: r.x, z: r.z };
+      this.roomKey = key;
+      return;
+    }
+  }
+  pathQuest() {
+    const h = this.hero;
+    const p = this.player;
+    if (!h || !p || this.screen !== "playing") return;
+    const q = h.quests.find((x) => !x.done);
+    const def = q ? QUESTS.find((x) => x.id === q.id) : null;
+    const step = def && q ? def.steps[q.step] : null;
+    let tx = null;
+    let tz = null;
+    const pick = (pred) => this.ents.find((e) => !e.dead && pred(e));
+    if (step?.kind === "talk") {
+      const n = pick((e) => e.npcId === step.target);
+      if (n) {
+        tx = n.x;
+        tz = n.z;
+      }
+    } else if (step?.kind === "enter" && step.target === "rift") {
+      const n = pick((e) => e.name === "riftstone");
+      if (n) {
+        tx = n.x;
+        tz = n.z;
+      }
+    } else if (step?.kind === "enter") {
+      const n = pick((e) => e.kind === "portal" && e.name !== "riftstone");
+      if (n) {
+        tx = n.x;
+        tz = n.z;
+      }
+    } else if (step?.kind === "kill" || step?.kind === "collect") {
+      const n = pick((e) => e.kind === "monster" && e.team === 2 && !e.corpse);
+      if (n) {
+        tx = n.x;
+        tz = n.z;
+      }
+    }
+    if (tx == null) return;
+    this.clickGo = null;
+    this.dest = { x: tx, z: tz };
   }
   interactScan() {
     const p = this.player;
     this.interact = null;
     this.interactEnt = null;
-    let best = 3.2;
+    if (!p) return;
+    const labelOf = (e) => {
+      const npc = NPCS.find((n) => n.id === e.npcId);
+      if (npc) return `Talk — ${npc.name}`;
+      if (e.kind === "chest") return "Open chest";
+      if (e.kind === "shrine") return "Touch shrine";
+      if (e.name === "riftstone") return "Enter the First Tear";
+      if (this.level?.isTown) return "The Shattered Road";
+      if (this.level?.biome === "wilds" && e.name === "exit") return "Enter the Cathedral";
+      if (e.kind === "portal") return "Return to Thornwatch";
+      return "Use";
+    };
+    const rangeOf = (e) => {
+      if (e.kind === "npc") return 2.6;
+      if (e.kind === "chest" || e.kind === "shrine" || e.kind === "portal") return 3.4;
+      return 2.6;
+    };
+    const priOf = (e) => {
+      if (e.kind === "chest" || e.kind === "shrine" || e.kind === "portal") return 0;
+      if (e.kind === "npc") return 1;
+      return 2;
+    };
+    let best = null;
+    let bestPri = 9;
+    let bestD = 99;
     for (const e of this.ents) {
       if (e === p || e.dead) continue;
-      if (!["npc", "chest", "shrine", "portal", "prop"].includes(e.kind))
-        continue;
+      if (!["npc", "chest", "shrine", "portal", "prop"].includes(e.kind)) continue;
       const d = Math.hypot(e.x - p.x, e.z - p.z);
-      if (d < best) {
-        best = d;
-        this.interactEnt = e;
-        const npc = NPCS.find((n) => n.id === e.npcId);
-        this.interact = npc
-          ? `Talk — ${npc.name}`
-          : e.kind === "chest"
-            ? "Open chest"
-            : e.kind === "shrine"
-              ? "Touch shrine"
-              : e.name === "riftstone"
-                ? "Enter the First Tear"
-                : e.kind === "portal"
-                  ? this.level?.isTown
-                    ? "Enter the Cathedral"
-                    : "Return to Thornwatch"
-                  : "Use";
+      if (d > rangeOf(e)) continue;
+      const pri = priOf(e);
+      if (pri < bestPri || (pri === bestPri && d < bestD)) {
+        bestPri = pri;
+        bestD = d;
+        best = e;
       }
+    }
+    if (best) {
+      this.interactEnt = best;
+      this.interact = labelOf(best);
     }
   }
   doInteract(e) {
@@ -2227,12 +2589,19 @@ export class Veilbreak {
     }
     if (e.kind === "portal") {
       if (e.name === "riftstone") this.enterPortal("rift");
-      else if (this.level?.isTown) this.enterPortal("cathedral");
+      else if (this.level?.isTown) this.enterPortal("marches");
+      else if (this.level?.biome === "wilds" && e.name === "exit") this.enterPortal("cathedral");
       else this.enterPortal("town");
       return;
     }
     const npc = e.npcId;
     if (!npc) return;
+    this.dest = null;
+    this.clickGo = null;
+    if (this.player) {
+      this.player.facing = Math.atan2(-(e.x - this.player.x), -(e.z - this.player.z));
+      this.yaw = this.player.facing;
+    }
     this.quest("talk", npc);
     if (npc === "ryn")
       this.dialogue = {
@@ -2389,18 +2758,17 @@ export class Veilbreak {
       if (e.team !== 2 || e.dead || e.corpse) continue;
       if (Math.hypot(e.x - x, e.z - z) <= r + e.r) {
         this.hurt(e, dmg * (1 + this.stat("area") / 200), false);
-        if (extra?.knock) {
-          if (!(e.elite && (e.knockLock ?? 0) > 0)) {
+        const locked = e.elite && (e.knockLock ?? 0) > 0;
+        if (!locked) {
+          if (extra?.knock) {
             const dx = e.x - x,
               dz = e.z - z,
               m = Math.hypot(dx, dz) || 1;
             e.x += (dx / m) * extra.knock * 0.15;
             e.z += (dz / m) * extra.knock * 0.15;
-            if (e.elite) e.knockLock = 3;
           }
-        }
-        if (extra?.stun) {
-          if (!(e.elite && (e.knockLock ?? 0) > 0)) this.applyCC(e, "stun", extra.stun);
+          if (extra?.stun) this.applyCC(e, "stun", extra.stun);
+          if (e.elite && (extra?.knock || extra?.stun)) e.knockLock = 3;
         }
         if (extra?.freeze) this.applyCC(e, "freeze", extra.freeze);
         if (extra?.snare) this.applyCC(e, "snare", extra.snare);
@@ -2451,7 +2819,8 @@ export class Veilbreak {
     if (crit) {
       dmg *= 1.5 + this.stat("critDmg") / 100;
       this.hitstop = Math.max(this.hitstop, 0.018);
-      this.trauma += 0.12;
+      this.trauma += 0.16;
+      this.vfx?.flash(e.x, e.z, 0xffcc55, 2.6, 0.1);
     }
     if (e.boss) this.trauma += 0.08;
     e.hp -= dmg;
@@ -2492,6 +2861,9 @@ export class Veilbreak {
     if (this.hp <= 0) {
       this.hp = 0;
       p.dead = true;
+      p.vx = 0;
+      p.vz = 0;
+      this.releaseInput();
       this.screen = "dead";
       this.audio.death();
       this.emit(true);
@@ -2533,6 +2905,8 @@ export class Veilbreak {
     }
     const extra = e.boss ? 4 + this.rng.int(0, 2) : e.elite ? 2 + this.rng.int(0, 2) : this.rng.chance(0.55) ? 1 : 0;
     for (let i = 0; i < extra; i++) this.dropLoot(e.x, e.z, !!e.elite, !!e.boss);
+    if (e.boss && !this.level?.isRift && !this.level?.isTown)
+      this.dropLoot(e.x, e.z, true, true, "legendary");
     if (e.boss && this.level?.isRift) {
       h.gems.push(
         randomGem(
@@ -2593,12 +2967,12 @@ export class Veilbreak {
     }
     return { x: nx, z: nz };
   }
-  dropLoot(x, z, elite, boss) {
+  dropLoot(x, z, elite, boss, force) {
     const h = this.hero;
     const magic = DIFFICULTY[h.difficulty].magic;
-    let rarity = rarityFor(magic, elite, boss, h.pity, this.rng);
-    if (elite && rarity === "normal") rarity = "magic";
-    if (boss && (rarity === "normal" || rarity === "magic")) rarity = "rare";
+    let rarity = force || rarityFor(magic, elite, boss, h.pity, this.rng);
+    if (!force && elite && rarity === "normal") rarity = "magic";
+    if (!force && boss && (rarity === "normal" || rarity === "magic")) rarity = "rare";
     if (rarity === "legendary" || rarity === "set") h.pity = 0;
     else if (elite) h.pity += 1;
     const item = rollItem({
@@ -2661,7 +3035,6 @@ export class Veilbreak {
       e.light = l;
     }
     if (rarity === "legendary" || rarity === "set") {
-      this.hitstop = Math.max(this.hitstop, 0.066);
       this.legendaryFlash = item.name;
       this.flashT = 1.4;
       this.post?.punch(0.003, 0.2);
@@ -2758,6 +3131,7 @@ export class Veilbreak {
   }
   burst(x, y, z, color, n) {
     if (this.reduced) return;
+    n = Math.max(1, Math.round(n * (this.quality.particles ?? 1) * this.crowdMul));
     for (let i = 0; i < n; i++) {
       let s = this.particlePool.pop();
       if (!s)
@@ -2799,6 +3173,7 @@ export class Veilbreak {
   }
   floatNum(x, y, z, n, crit, _dot, kind) {
     if (!this.save.settings.numbers) return;
+    if (this.numbers.length >= 12) this.numbers.shift();
     const text =
       kind === "dodge"
         ? "dodge"
@@ -2862,13 +3237,15 @@ export class Veilbreak {
       const dot = d < 0.08 ? 1 : (dx * fx + dz * fz) / d;
       if (dot < Math.cos(half)) continue;
       this.hurt(e, dmg * (1 + this.stat("area") / 200), false);
-      if (extra?.knock && !(e.elite && (e.knockLock ?? 0) > 0)) {
-        e.x += fx * extra.knock * 0.12;
-        e.z += fz * extra.knock * 0.12;
-        if (e.elite) e.knockLock = 3;
+      const locked = e.elite && (e.knockLock ?? 0) > 0;
+      if (!locked) {
+        if (extra?.knock) {
+          e.x += fx * extra.knock * 0.12;
+          e.z += fz * extra.knock * 0.12;
+        }
+        if (extra?.stun) this.applyCC(e, "stun", extra.stun);
+        if (e.elite && (extra?.knock || extra?.stun)) e.knockLock = 3;
       }
-      if (extra?.stun && !(e.elite && (e.knockLock ?? 0) > 0))
-        this.applyCC(e, "stun", extra.stun);
     }
   }
   nearestEnemyFrom(from, r) {
@@ -3085,7 +3462,7 @@ export class Veilbreak {
         : this.trauma * this.trauma * (this.save.settings.shake ?? 0.7);
       const ox = (Math.random() - 0.5) * shake * 1.1;
       const oz = (Math.random() - 0.5) * shake * 1.1;
-      const followK = this.camLagT > 0 ? 3.4 : 10;
+      const followK = this.camLagT > 0 ? 3.4 : 6.6;
       this.camLagT = Math.max(0, this.camLagT - dt);
       const lookX = expLerp(this.camera.position.x - off.x, p.x, followK, dt);
       const lookZ = expLerp(this.camera.position.z - off.z, p.z, followK, dt);
@@ -3095,6 +3472,11 @@ export class Veilbreak {
       this.camera.lookAt(lookX, 1.28, lookZ);
       this.world?.followShadows(p.x, p.z);
       this.world?.flicker(this.clock.elapsedTime, p.x, p.z);
+    }
+    if (this.reticle) {
+      const show = this.pc && this.screen === "playing" && this.panel !== "pause";
+      this.reticle.visible = show;
+      if (show) this.reticle.position.set(this.aim.x, 0.07, this.aim.z);
     }
     const t = this.clock.elapsedTime;
     for (const e of this.ents) {
@@ -3118,6 +3500,11 @@ export class Veilbreak {
           dt,
           time: t,
         });
+        e.figure.root.position.set(
+          e.x + (e.figure.shakeX || 0),
+          (e.hopY || 0) + (e.figure.sinkY || 0),
+          e.z,
+        );
         if (e.attackT > 0) e.attackT -= dt;
         if (e.corpse) {
           e.corpseT = (e.corpseT ?? 8) - dt;
@@ -3144,9 +3531,31 @@ export class Veilbreak {
     ctx.clearRect(0, 0, w, h);
     if (this.screen !== "playing" || !this.player) return;
     const pr = this.renderer.getPixelRatio();
+    if (this.dest) {
+      const steps = 6;
+      ctx.fillStyle = "#e6c87a";
+      for (let i = 1; i <= steps; i++) {
+        const t = i / (steps + 0.4);
+        this.tmp.set(
+          this.player.x + (this.dest.x - this.player.x) * t,
+          0.12,
+          this.player.z + (this.dest.z - this.player.z) * t,
+        ).project(this.camera);
+        if (this.tmp.z > 1) continue;
+        const sx = (this.tmp.x * 0.5 + 0.5) * w;
+        const sy = (-this.tmp.y * 0.5 + 0.5) * h;
+        ctx.globalAlpha = 0.35 + (i / steps) * 0.45;
+        ctx.beginPath();
+        ctx.arc(sx, sy, (2.2 + i * 0.35) * pr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.globalAlpha = 1;
+    }
     for (const n of this.numbers) {
       this.tmp.set(n.x, n.y + (0.65 - n.t) * 1.4, n.z);
       this.tmp.project(this.camera);
+      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
+        continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       ctx.globalAlpha = Math.min(1, n.t * 2);
@@ -3174,6 +3583,8 @@ export class Veilbreak {
     for (const e of this.ents) {
       if (e.kind !== "monster" || e.dead || e.team !== 2) continue;
       this.tmp.set(e.x, e.scale + 0.2, e.z).project(this.camera);
+      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
+        continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       const bw = (e.boss ? 90 : 44) * pr;
@@ -3185,6 +3596,8 @@ export class Veilbreak {
     for (const e of this.ents) {
       if (e.kind !== "pickup" || !e.item) continue;
       this.tmp.set(e.x, 1.3, e.z).project(this.camera);
+      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
+        continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       ctx.font = `600 ${12 * pr}px Barlow, sans-serif`;
@@ -3204,6 +3617,8 @@ export class Veilbreak {
     for (const e of this.ents) {
       if (e.kind !== "pickup" || e.item || e.dead) continue;
       this.tmp.set(e.x, 1.05, e.z).project(this.camera);
+      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
+        continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       ctx.font = `600 ${11 * pr}px Barlow, sans-serif`;
@@ -3214,8 +3629,10 @@ export class Veilbreak {
     for (const e of this.ents) {
       if (e.kind !== "npc" || !e.name) continue;
       if (!this.player) continue;
-      if (Math.hypot(e.x - this.player.x, e.z - this.player.z) > 5.5) continue;
+      if (Math.hypot(e.x - this.player.x, e.z - this.player.z) > 4.5) continue;
       this.tmp.set(e.x, (e.figure?.height ?? e.scale) + 0.2, e.z).project(this.camera);
+      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
+        continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
       ctx.font = `700 ${12 * pr}px Cinzel, serif`;
@@ -3236,6 +3653,14 @@ export class Veilbreak {
     window.__controlsTest = {
       getYaw: () => this.yaw,
       getSpeed: () => this.speed,
+      getMesh: () => ({
+        x: this.player?.x ?? 0,
+        z: this.player?.z ?? 0,
+        mx: this.player?.figure?.root.position.x ?? 0,
+        mz: this.player?.figure?.root.position.z ?? 0,
+        cx: this.camLookX,
+        cz: this.camLookZ,
+      }),
       setKeys: (codes) => this.input.setKeys(codes),
       setPos: (x, z) => {
         if (!this.player) return;
@@ -3377,6 +3802,7 @@ export class Veilbreak {
       channel: this.channel,
       lowHp: this.maxHp > 0 && this.hp / this.maxHp < 0.28,
       portrait: cls.portrait,
+      pc: this.pc,
     };
   }
   minimap() {

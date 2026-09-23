@@ -164,26 +164,16 @@ export function generateDungeon(opts: {
 }): Level {
   const rng = new Rng(opts.seed);
   const rooms: Room[] = [];
-  const n = opts.isRift ? 7 + Math.min(6, opts.riftTier ?? 1) : 6 + rng.int(0, 3);
-  const kinds: RoomKind[] = ["start"];
-  for (let i = 1; i < n - 1; i++) {
-    const roll = rng.next();
-    if (roll < 0.12) kinds.push("shrine");
-    else if (roll < 0.22) kinds.push("treasure");
-    else if (roll < 0.4) kinds.push("elite");
-    else if (roll < 0.5) kinds.push("event");
-    else kinds.push("combat");
-  }
-  kinds.push(opts.wantBoss !== false ? "boss" : "combat");
-  if (rng.chance(0.7)) kinds.splice(Math.max(2, n - 3), 0, "secret");
-
-  const spacing = 22;
+  const kinds: RoomKind[] = opts.isRift
+    ? ["start", "combat", "elite", "boss"]
+    : ["start", "combat", "elite", "combat", "boss"];
+  const spacing = 16;
   let x = 0,
     z = 0;
-  const used = new Set<string>("0,0");
+  const used = new Set<string>(["0,0"]);
   for (let i = 0; i < kinds.length; i++) {
-    const w = 14 + rng.int(0, 6);
-    const d = 12 + rng.int(0, 6);
+    const w = 13 + rng.int(0, 3);
+    const d = 12 + rng.int(0, 3);
     rooms.push({ kind: kinds[i]!, x, z, w, d, biome: opts.biome });
     const dirs = [
       [1, 0],
@@ -266,7 +256,9 @@ export function generateDungeon(opts: {
         champion: champ,
       });
     }
-    if (r.kind === "combat" && rng.chance(0.25)) props.push({ kind: "chest", x: r.x + r.w / 2 - 2, z: r.z });
+    if (r.kind === "combat" && rooms.indexOf(r) === 1)
+      props.push({ kind: "shrine", x: r.x - 3.2, z: r.z, shrine: "damage" });
+    if (r.kind === "combat" && rng.chance(0.4)) props.push({ kind: "chest", x: r.x + r.w / 2 - 2, z: r.z });
   }
 
   let minx = Infinity,
@@ -338,6 +330,48 @@ export function generateTown(): Level {
     ambient: 0.58,
     seed: 1,
     isTown: true,
+  };
+}
+
+/** Short outdoor road: three packs, one elite, a shrine, then the cathedral gate. */
+export function generateMarches(seed = 7): Level {
+  const rng = new Rng(seed);
+  const w = 18;
+  const d = 48;
+  const mons = ["imp", "cultist", "skeleton"];
+  const spawns: Spawn[] = [];
+  const packs = [12, 4, -6, -16];
+  packs.forEach((z, pi) => {
+    const n = pi === 2 ? 8 : 6;
+    for (let i = 0; i < n; i++) {
+      const a = rng.next() * Math.PI * 2;
+      const rad = 1.2 + rng.next() * 3.2;
+      spawns.push({
+        x: Math.cos(a) * rad,
+        z: z + Math.sin(a) * rad * 0.65,
+        monster: pi === 2 && i === 0 ? "brute" : rng.pick(mons),
+        elite: pi === 2 && i < 2,
+      });
+    }
+  });
+  return {
+    name: "The Shattered Road",
+    biome: "wilds",
+    rooms: [{ kind: "start", x: 0, z: 0, w, d, biome: "wilds" }],
+    walls: [...rectWalls(0, 0, w, d, 1.1)],
+    spawns,
+    props: [
+      { kind: "portal", x: 0, z: 20 },
+      { kind: "shrine", x: 5.2, z: 8, shrine: "speed" },
+      { kind: "exit", x: 0, z: -21 },
+    ],
+    playerX: 0,
+    playerZ: 18,
+    bounds: { x: 0, z: 0, w, d },
+    fog: 0.01,
+    ambient: 0.62,
+    seed,
+    corridors: [],
   };
 }
 

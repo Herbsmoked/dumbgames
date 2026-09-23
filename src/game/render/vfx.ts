@@ -44,6 +44,7 @@ export class VfxWorld {
   private aimEdge: THREE.Mesh | null = null;
   private aimKind: AimKind | "" = "";
   private warn: { mesh: THREE.Mesh; t: number }[] = [];
+  crowdMul = 1;
 
 
   constructor(scene: THREE.Scene, kit: TextureKit, quality: Quality) {
@@ -73,6 +74,10 @@ export class VfxWorld {
     this.dust = new THREE.MeshStandardMaterial({ color: 0x6a5a48, roughness: 0.95, transparent: true, opacity: 0.85 });
     this.group.add(this.aimGroup);
     this.aimGroup.visible = false;
+  }
+
+  setCrowd(mul: number) {
+    this.crowdMul = mul;
   }
 
   clear() {
@@ -110,7 +115,7 @@ export class VfxWorld {
   }
 
   burst(x: number, y: number, z: number, color: number, n: number, mode: "blood" | "ember" | "chunk" | "soul" = "blood") {
-    const count = Math.max(3, Math.round(n * this.quality.particles));
+    const count = Math.max(3, Math.round(n * this.quality.particles * this.crowdMul));
     for (let i = 0; i < count; i++) {
       const mat = mode === "ember" ? this.ember : mode === "soul" ? this.gold : mode === "chunk" ? this.dust : this.blood;
       const geo = mode === "chunk" ? chunkGeo : mode === "soul" ? wispGeo : sparkGeo;
@@ -145,12 +150,12 @@ export class VfxWorld {
     this.burst(x, 0.4, z, color, 16, "chunk");
     this.burst(x, 0.55, z, color, 12, "ember");
     this.flash(x, z, color, 3.4, 0.2);
-    const scuff = new THREE.MeshBasicMaterial({ color: 0x2a1810, transparent: true, opacity: 0.45, depthWrite: false });
+    const scuff = new THREE.MeshBasicMaterial({ color: 0x2a1810, transparent: true, opacity: 0.55, depthWrite: false });
     const mesh = new THREE.Mesh(scuffGeo, scuff);
     mesh.rotation.x = -Math.PI / 2;
     mesh.position.set(x, 0.04, z);
     this.group.add(mesh);
-    this.pulses.push({ mesh, t: 0.55, max: 0.55, grow: 3.2 });
+    this.pulses.push({ mesh, t: 1.15, max: 1.15, grow: 2.2 });
   }
 
   whirl(x: number, z: number) {
@@ -171,15 +176,17 @@ export class VfxWorld {
     mesh.position.set(x + Math.sin(facing) * 0.35, 0.95, z + Math.cos(facing) * 0.35);
     mesh.rotation.set(0.35, facing, 0.95);
     this.group.add(mesh);
-    this.pulses.push({ mesh, t: 0.16, max: 0.16, grow: 3.6 });
-    this.burst(x, 0.9, z, 0xffcc88, 4, "ember");
+    this.pulses.push({ mesh, t: 0.18, max: 0.18, grow: 3.2 });
+    this.burst(x, 0.85, z, 0xfff2d0, 8, "ember");
+    this.flash(x, z, 0xffe4b0, 2.2, 0.1);
   }
 
   death(x: number, z: number, elite: boolean, boss: boolean) {
     this.burst(x, 0.8, z, 0x771111, elite || boss ? 24 : 14, "blood");
     this.burst(x, 0.9, z, 0x442211, elite || boss ? 18 : 9, "chunk");
     this.burst(x, 1.15, z, 0xffcc88, elite || boss ? 16 : 7, "soul");
-    if (boss) this.flash(x, z, 0xff2200, 8, 0.5);
+    if (elite || boss) this.flash(x, z, boss ? 0xff2200 : 0xff6633, boss ? 7 : 4.5, 0.28);
+    else this.flash(x, z, 0x771111, 2.2, 0.12);
   }
 
   lootShaft(x: number, z: number, color: number, rarity: string): { mesh: THREE.Object3D; light: THREE.PointLight | null } {
