@@ -4,6 +4,7 @@ import type { Veilbreak } from "@/game/engine";
 import { CLASSES, DIFFICULTY, GAME_TITLE, INVENTORY_SIZE, INTRO, LEGENDARIES, ROSTER, SLOT_LABEL, SLOTS, TOWN_NAME, roleOf } from "@/game/catalog";
 import { formatAffix, itemCR, itemDamage, itemLife } from "@/game/loot";
 import type { ClassId, Item, Panel, SkillSnap, Slot, UiSnapshot } from "@/game/types";
+import { isPc } from "@/game/platform";
 
 const empty: UiSnapshot = {
   screen: "title",
@@ -53,12 +54,13 @@ const empty: UiSnapshot = {
   ping: "",
   interact: null,
   legendaryFlash: null,
-  loading: true,
+  loading: false,
   loadPct: 0,
   combatRating: 0,
   channel: null,
   lowHp: false,
   portrait: "/game/portraits/barbarian.jpg",
+  pc: typeof window === "undefined" ? true : isPc(),
 };
 
 export function GameApp() {
@@ -106,7 +108,7 @@ export function GameApp() {
 
   return (
     <div className="relative h-dvh w-full overflow-hidden bg-void text-bone font-sans">
-      <canvas ref={worldRef} className="absolute inset-0 h-full w-full touch-none" />
+      <canvas ref={worldRef} className={`absolute inset-0 h-full w-full touch-none ${ui.pc && ui.screen === "playing" ? "cursor-none" : ""}`} />
       <canvas ref={overlayRef} className="pointer-events-none absolute inset-0 h-full w-full" />
 
       {ui.loading && <LoadGate pct={ui.loadPct} />}
@@ -169,10 +171,17 @@ export function GameApp() {
       {ui.screen === "dead" && (
         <div className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-void/80">
           <p className="font-display text-4xl tracking-widest text-blood">Fallen</p>
-          <p className="mt-3 max-w-sm text-center text-muted">The Choir does not keep what it kills. Thornwatch still has a bed for you.</p>
-          <button type="button" className="mt-8 rounded-md bg-bone px-8 py-3 text-sm font-semibold text-void" onClick={() => g?.respawn()}>
-            Return to Thornwatch
-          </button>
+          <p className="mt-3 max-w-sm text-center text-muted">The Choir does not keep what it kills. Rise where you fell, or walk back to the lanterns.</p>
+          <div className="mt-8 flex flex-wrap justify-center gap-3">
+            {ui.biome !== "town" && (
+              <button type="button" className="rounded-md border border-gold bg-stone px-6 py-3 text-sm font-semibold text-bone" onClick={() => g?.respawn(false)}>
+                Rise at the door
+              </button>
+            )}
+            <button type="button" className="rounded-md bg-bone px-8 py-3 text-sm font-semibold text-void" onClick={() => g?.respawn(true)}>
+              Return to Thornwatch
+            </button>
+          </div>
         </div>
       )}
 
@@ -464,11 +473,11 @@ function Hud(props: {
         </div>
       )}
 
-      <div className="pointer-events-none absolute left-3 top-24 z-10 max-w-[200px] sm:top-28">
-        <div className="quest-parchment rounded-sm px-3 py-2 text-[11px] leading-snug">
+      <div className="pointer-events-none absolute left-3 top-24 z-10 max-w-[220px] sm:top-28">
+        <button type="button" className="quest-parchment pointer-events-auto rounded-sm px-3 py-2 text-left text-[11px] leading-snug" onClick={() => game.current?.pathQuest()}>
           <p className="mb-0.5 text-[10px] tracking-widest text-gold uppercase">!</p>
           {ui.questText}
-        </div>
+        </button>
       </div>
 
       <div className="pointer-events-none absolute bottom-36 left-1/2 z-10 flex w-[min(280px,70vw)] -translate-x-1/2 flex-col items-center gap-1">
@@ -489,8 +498,8 @@ function Hud(props: {
         ))}
       </div>
 
-      <SkillCluster ui={ui} onSkill={props.onSkill} onSkillHold={props.onSkillHold} onPrimary={props.onPrimary} onUlt={props.onUlt} onPotion={props.onPotion} />
-      <Stick onStick={props.onStick} />
+      <SkillCluster ui={ui} pc={ui.pc} onSkill={props.onSkill} onSkillHold={props.onSkillHold} onPrimary={props.onPrimary} onUlt={props.onUlt} onPotion={props.onPotion} />
+      {!ui.pc && <Stick onStick={props.onStick} />}
 
       {ui.panel === "inventory" && <Inv {...props} />}
       {ui.panel === "stash" && <Stash {...props} />}
@@ -527,12 +536,14 @@ function Hud(props: {
 
 function SkillCluster({
   ui,
+  pc,
   onSkillHold,
   onPrimary,
   onUlt,
   onPotion,
 }: {
   ui: UiSnapshot;
+  pc: boolean;
   onSkill: (i: number) => void;
   onSkillHold: (i: number, d: boolean) => void;
   onPrimary: (d: boolean) => void;
@@ -540,6 +551,30 @@ function SkillCluster({
   onPotion: () => void;
 }) {
   const s = ui.skills;
+  if (pc) {
+    return (
+      <div className="absolute bottom-3 right-3 z-20 flex items-end gap-1.5 sm:bottom-4 sm:right-4">
+        {ui.ultReady && ui.ultimate && (
+          <Medallion skill={ui.ultimate} size={42} onDown={() => onUlt()} pulse />
+        )}
+        {s[0] && <Medallion skill={s[0]} size={44} onDown={() => onSkillHold(0, true)} onUp={() => onSkillHold(0, false)} />}
+        {s[1] && <Medallion skill={s[1]} size={44} onDown={() => onSkillHold(1, true)} onUp={() => onSkillHold(1, false)} />}
+        {s[2] && <Medallion skill={s[2]} size={44} onDown={() => onSkillHold(2, true)} onUp={() => onSkillHold(2, false)} />}
+        {s[3] && <Medallion skill={s[3]} size={44} onDown={() => onSkillHold(3, true)} onUp={() => onSkillHold(3, false)} />}
+        <button
+          type="button"
+          className={`medallion size-10 ${ui.hp / ui.maxHp < 0.55 ? "animate-pulse" : ""}`}
+          onClick={onPotion}
+          aria-label="Potion"
+        >
+          <img src="/game/icons/potion.png" alt="" />
+          {ui.potionCd > 0 && <span className="cd-sweep" style={{ ["--cd" as string]: String(Math.min(1, ui.potionCd / 2.6)) }} />}
+          {ui.potionCd > 0 && <span className="cd-num text-sm">{Math.ceil(ui.potionCd)}</span>}
+          <span className="absolute -right-1 -top-1 rounded-sm border border-gold bg-stone px-1 text-[10px] font-bold tabular-nums">{ui.potionCount}</span>
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="absolute bottom-2 right-2 z-20 h-[200px] w-[220px] sm:bottom-4 sm:right-4">
       {ui.ultReady && ui.ultimate && (

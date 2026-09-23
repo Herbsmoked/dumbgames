@@ -17,12 +17,13 @@ export function detectQuality(): Quality {
   const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 8) : 8;
   const low = mobile || cores <= 4;
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  const mid = !low && (mobile || cores <= 6);
   return {
     low,
     mobile,
-    dpr: low ? Math.min(1, dpr) : Math.min(dpr, 1.75),
+    dpr: low ? Math.min(1, dpr) : Math.min(dpr, 2),
     shadows: true,
-    shadowMap: low ? 512 : 2048,
+    shadowMap: low ? 512 : mid ? 1024 : 2048,
     bloom: !low,
     grain: !low,
     particles: low ? 0.42 : 1,

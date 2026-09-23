@@ -1,3 +1,5 @@
+import { isPc } from "./platform";
+
 export type Actions = {
   moveX: number;
   moveY: number;
@@ -154,11 +156,17 @@ export class Input {
       if (gp.buttons[6]?.pressed) skills[2] = true;
       if (gp.buttons[7]?.pressed) skills[3] = true;
     }
-    const primary = has("Space") || this.pointer.down || this.hudPrimary || !!gp?.buttons[1]?.pressed;
+    const pc = isPc();
+    // PC: LMB / Space / HUD primary attack in place. Mobile: Space / HUD / gamepad only — world tap is dest.
+    const primary =
+      has("Space") ||
+      this.hudPrimary ||
+      !!gp?.buttons[1]?.pressed ||
+      (pc && this.pointer.down && !this.pointer.right);
     const potion = has("KeyR") || this.hudPotion || !!gp?.buttons[3]?.pressed;
     const ultimate = has("KeyQ") || this.hudUlt || !!gp?.buttons[2]?.pressed;
     const interact = has("KeyE") || has("KeyG") || !!gp?.buttons[0]?.pressed;
-    const forceMove = has("KeyF");
+    const forceMove = has("KeyF") || this.pointer.right;
     const inv = has("KeyI") || has("Tab") || has("KeyC") || has("KeyB");
     const pause = has("Escape") || has("KeyP");
     const a: Actions = {

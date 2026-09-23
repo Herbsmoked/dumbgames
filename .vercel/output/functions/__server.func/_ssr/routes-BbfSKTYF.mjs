@@ -1,7 +1,7 @@
 import { i as __toESM } from "../_runtime.mjs";
 import { I as require_jsx_runtime, L as require_react } from "../_libs/@tanstack/react-router+[...].mjs";
 import { a as Hand, i as Map, n as Swords, o as Backpack, r as Menu } from "../_libs/lucide-react.mjs";
-//#region node_modules/.nitro/vite/services/ssr/assets/routes-Csje0xVT.js
+//#region node_modules/.nitro/vite/services/ssr/assets/routes-BbfSKTYF.js
 var import_react = /* @__PURE__ */ __toESM(require_react());
 var import_jsx_runtime = require_jsx_runtime();
 var __defProp = Object.defineProperty;
@@ -2492,6 +2492,20 @@ function randomGem(rng, rank = 1) {
 		copies: 1
 	};
 }
+/** Fine pointer + hover + wide viewport → desktop WASD/mouse scheme.
+*  Headless / automation often reports neither fine nor hover; a wide
+*  non-coarse viewport is treated as PC so the desktop HUD is what QA sees.
+*/
+function isPc() {
+	if (typeof window === "undefined") return true;
+	if (window.innerWidth < 900) return false;
+	const fine = window.matchMedia?.("(pointer: fine)")?.matches ?? false;
+	const hover = window.matchMedia?.("(hover: hover)")?.matches ?? false;
+	const coarse = window.matchMedia?.("(pointer: coarse)")?.matches ?? false;
+	if (fine || hover) return true;
+	if (coarse) return false;
+	return true;
+}
 var empty = {
 	screen: "title",
 	panel: "none",
@@ -2550,12 +2564,13 @@ var empty = {
 	ping: "",
 	interact: null,
 	legendaryFlash: null,
-	loading: true,
+	loading: false,
 	loadPct: 0,
 	combatRating: 0,
 	channel: null,
 	lowHp: false,
-	portrait: "/game/portraits/barbarian.jpg"
+	portrait: "/game/portraits/barbarian.jpg",
+	pc: typeof window === "undefined" ? true : isPc()
 };
 function GameApp() {
 	const worldRef = (0, import_react.useRef)(null);
@@ -2573,7 +2588,7 @@ function GameApp() {
 		if (!world || !overlay) return;
 		let g = null;
 		let dead = false;
-		import("./engine-DMerrHZ_.mjs").then(({ Veilbreak }) => {
+		import("./engine-BTs81K4A.mjs").then(({ Veilbreak }) => {
 			if (dead) return;
 			g = new Veilbreak(world, overlay, setUi);
 			game.current = g;
@@ -2600,7 +2615,7 @@ function GameApp() {
 		children: [
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("canvas", {
 				ref: worldRef,
-				className: "absolute inset-0 h-full w-full touch-none"
+				className: `absolute inset-0 h-full w-full touch-none ${ui.pc && ui.screen === "playing" ? "cursor-none" : ""}`
 			}),
 			/* @__PURE__ */ (0, import_jsx_runtime.jsx)("canvas", {
 				ref: overlayRef,
@@ -3123,13 +3138,14 @@ function Hud(props) {
 		}),
 		/* @__PURE__ */ (0, import_jsx_runtime.jsx)(SkillCluster, {
 			ui,
+			pc: ui.pc,
 			onSkill: props.onSkill,
 			onSkillHold: props.onSkillHold,
 			onPrimary: props.onPrimary,
 			onUlt: props.onUlt,
 			onPotion: props.onPotion
 		}),
-		/* @__PURE__ */ (0, import_jsx_runtime.jsx)(Stick, { onStick: props.onStick }),
+		!ui.pc && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Stick, { onStick: props.onStick }),
 		ui.panel === "inventory" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Inv, { ...props }),
 		ui.panel === "stash" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Stash, { ...props }),
 		ui.panel === "vendor" && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Vendor, { ...props }),
@@ -3198,8 +3214,67 @@ function Hud(props) {
 		})
 	] });
 }
-function SkillCluster({ ui, onSkillHold, onPrimary, onUlt, onPotion }) {
+function SkillCluster({ ui, pc, onSkillHold, onPrimary, onUlt, onPotion }) {
 	const s = ui.skills;
+	if (pc) return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
+		className: "absolute bottom-3 right-3 z-20 flex items-end gap-1.5 sm:bottom-4 sm:right-4",
+		children: [
+			ui.ultReady && ui.ultimate && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Medallion, {
+				skill: ui.ultimate,
+				size: 42,
+				onDown: () => onUlt(),
+				pulse: true
+			}),
+			s[0] && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Medallion, {
+				skill: s[0],
+				size: 44,
+				onDown: () => onSkillHold(0, true),
+				onUp: () => onSkillHold(0, false)
+			}),
+			s[1] && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Medallion, {
+				skill: s[1],
+				size: 44,
+				onDown: () => onSkillHold(1, true),
+				onUp: () => onSkillHold(1, false)
+			}),
+			s[2] && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Medallion, {
+				skill: s[2],
+				size: 44,
+				onDown: () => onSkillHold(2, true),
+				onUp: () => onSkillHold(2, false)
+			}),
+			s[3] && /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Medallion, {
+				skill: s[3],
+				size: 44,
+				onDown: () => onSkillHold(3, true),
+				onUp: () => onSkillHold(3, false)
+			}),
+			/* @__PURE__ */ (0, import_jsx_runtime.jsxs)("button", {
+				type: "button",
+				className: `medallion size-10 ${ui.hp / ui.maxHp < .55 ? "animate-pulse" : ""}`,
+				onClick: onPotion,
+				"aria-label": "Potion",
+				children: [
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("img", {
+						src: "/game/icons/potion.png",
+						alt: ""
+					}),
+					ui.potionCd > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+						className: "cd-sweep",
+						style: { ["--cd"]: String(Math.min(1, ui.potionCd / 2.6)) }
+					}),
+					ui.potionCd > 0 && /* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+						className: "cd-num text-sm",
+						children: Math.ceil(ui.potionCd)
+					}),
+					/* @__PURE__ */ (0, import_jsx_runtime.jsx)("span", {
+						className: "absolute -right-1 -top-1 rounded-sm border border-gold bg-stone px-1 text-[10px] font-bold tabular-nums",
+						children: ui.potionCount
+					})
+				]
+			})
+		]
+	});
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsxs)("div", {
 		className: "absolute bottom-2 right-2 z-20 h-[200px] w-[220px] sm:bottom-4 sm:right-4",
 		children: [
@@ -4148,4 +4223,4 @@ function Home() {
 	return /* @__PURE__ */ (0, import_jsx_runtime.jsx)(GameApp, {});
 }
 //#endregion
-export { defaultLoadout as C, roleOf as D, iconFor as E, xpToNext as O, defaultUlt as T, NPCS as _, randomGem as a, salvageValue as c, CHAMPION_AFFIXES as d, CLASSES as f, MONSTERS as g, LEGENDARIES as h, identify as i, ACT_BOSSES as l, Rng as n, rarityFor as o, DIFFICULTY as p, rollItem as s, routes_exports as t, BIOME_MONSTERS as u, QUESTS as v, defaultPrimary as w, SHRINES as x, SEASON_NAME as y };
+export { iconFor as D, defaultUlt as E, roleOf as O, SHRINES as S, defaultPrimary as T, MONSTERS as _, identify as a, SEASON_NAME as b, rollItem as c, BIOME_MONSTERS as d, CHAMPION_AFFIXES as f, LEGENDARIES as g, xpToNext as k, salvageValue as l, DIFFICULTY as m, isPc as n, randomGem as o, CLASSES as p, Rng as r, rarityFor as s, routes_exports as t, ACT_BOSSES as u, NPCS as v, defaultLoadout as w, QUESTS as y };
