@@ -33,17 +33,40 @@ export class GameAudio {
   }
 
   hit(crit = false) {
-    this.noise(0.05, crit ? 0.35 : 0.22, crit ? 900 : 280, crit ? 0.08 : 0.05);
-    this.tone(crit ? 520 : 180, crit ? 0.12 : 0.07, "square", crit ? 0.08 : 0.05);
+    this.noise(0.05, crit ? 0.38 : 0.24, crit ? 980 : 300, crit ? 0.09 : 0.055);
+    this.tone(crit ? 540 : 190, crit ? 0.11 : 0.07, "square", crit ? 0.09 : 0.055);
+    if (crit) {
+      this.tone(880, 0.09, "sine", 0.06);
+      this.tone(1320, 0.07, "triangle", 0.04);
+    }
   }
 
   swing() {
-    this.noise(0.04, 0.12, 700, 0.06);
+    this.noise(0.04, 0.14, 720, 0.06);
+    this.tone(140, 0.05, "sawtooth", 0.03);
+  }
+
+  skillCast(heavy = false) {
+    this.noise(0.05, heavy ? 0.22 : 0.14, heavy ? 420 : 640, heavy ? 0.1 : 0.06);
+    this.tone(heavy ? 110 : 220, heavy ? 0.12 : 0.06, "sawtooth", heavy ? 0.07 : 0.04);
+    if (heavy) this.tone(330, 0.1, "triangle", 0.045);
+  }
+
+  telegraph() {
+    this.noise(0.08, 0.12, 180, 0.12);
+    this.tone(90, 0.14, "sine", 0.04);
   }
 
   death() {
-    this.noise(0.18, 0.4, 140, 0.16);
-    this.tone(90, 0.2, "sawtooth", 0.12);
+    this.noise(0.2, 0.42, 130, 0.18);
+    this.tone(85, 0.22, "sawtooth", 0.13);
+    this.tone(55, 0.28, "sine", 0.08);
+  }
+
+  eliteDeath() {
+    this.death();
+    this.tone(180, 0.25, "square", 0.07);
+    this.tone(270, 0.3, "sine", 0.06);
   }
 
   legendary() {

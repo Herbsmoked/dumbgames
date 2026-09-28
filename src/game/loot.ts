@@ -92,9 +92,16 @@ export function rollItem(opts: {
     name = `${set.name} ${slot}`;
     base = BASES.find((b) => b.slot === slot) ?? base;
   } else {
-    name = base.name;
-    if (rarity === "magic") name = "Blessed " + name;
-    if (rarity === "rare") name = "Riven " + name;
+    const prefixes =
+      rarity === "rare"
+        ? ["Riven", "Ashen", "Veilbound", "Stormforged", "Bloodied"]
+        : rarity === "magic"
+          ? ["Blessed", "Keen", "Sturdy", "Grim", "Hallowed"]
+          : ["Worn", "Plain", "Serviceable", "Scarred", "Common"];
+    const suffixes = ["", "", " of Thorns", " of the Tear", " of Aeloria"];
+    const pref = rng.pick(prefixes);
+    const suf = rarity === "normal" ? "" : rng.pick(suffixes);
+    name = `${pref} ${base.name}${suf}`.trim();
   }
   const nAff =
     rarity === "normal" ? rng.int(0, 1) : rarity === "magic" ? rng.int(2, 3) : rarity === "rare" ? rng.int(4, 5) : rng.int(5, 6);

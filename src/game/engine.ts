@@ -215,8 +215,8 @@ export class Veilbreak {
     x: 0,
     y: 0,
   };
-  viewSize = 5.5;
-  baseViewSize = 5.5;
+  viewSize = 5.15;
+  baseViewSize = 5.15;
   gemGeo = new THREE.OctahedronGeometry(0.22, 0);
   goldPileGeo = new THREE.CylinderGeometry(0.22, 0.28, 0.16, 8);
   camFwd = new THREE.Vector3(-1, 0, -1).normalize();
@@ -225,6 +225,15 @@ export class Veilbreak {
   camLagT = 0;
   aimingSlot = -1;
   aimHoldT = 0;
+  autoCombat = false;
+  gcd = 0;
+  softLock = null;
+  camKickX = 0;
+  camKickZ = 0;
+  swingCommit = 0;
+  /** Brief red edge flash when the hero takes a hit (DI pain cue). */
+  hurtFlash = 0;
+  footDustT = 0;
   camLookX = 0;
   camLookZ = 0;
   checkpoint = { x: 0, z: 0 };
@@ -234,6 +243,8 @@ export class Veilbreak {
   texKit = new TextureKit(detectQuality());
   post = null;
   figures = null;
+  /** Reused 3D hero mesh across town ↔ Tear loads. */
+  _keptHeroFigure = null;
   vfx = null;
   world = null;
   reticle = null;
@@ -248,7 +259,7 @@ export class Veilbreak {
     this.pushUI = pushUI;
     this.save = loadSave();
     this.input = new Input(canvas);
-    this.quality = detectQuality();
+    this.quality = detectQuality(this.save.settings.graphics ?? "max");
     this.texKit = new TextureKit(this.quality);
     const aspect = window.innerWidth / Math.max(1, window.innerHeight);
     const f = this.viewSize;
@@ -271,9 +282,11 @@ export class Veilbreak {
     this.renderer.setPixelRatio(this.quality.dpr);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.renderer.shadowMap.enabled = this.quality.shadows;
-    this.renderer.shadowMap.type = THREE.PCFShadowMap;
+    this.renderer.shadowMap.type = this.quality.low
+      ? THREE.BasicShadowMap
+      : THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.38;
+    this.renderer.toneMappingExposure = this.quality.low ? 1.28 : 1.42;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setClearColor(0x1c1814, 1);
     this.scene.fog = new THREE.FogExp2(0x1c1814, 0.01);
@@ -768,7 +781,8 @@ export class Veilbreak {
       return;
     }
     this.paperdoll?.dispose();
-    this.paperdoll = new PaperdollView(canvas, this.texKit, this.quality);
+    this.paperdoll = new PaperdollView(canvas, this.texKit, this.quality, this.figures ?? undefined);
+    this.paperdoll.setClass(this.hero?.classId ?? "barbarian");
     this.paperdoll.setGear(this.hero?.equipped ?? {});
   }
   paperdollYaw(d) {
@@ -790,10 +804,33 @@ export class Veilbreak {
     this.drink();
   }
   pickupGround(uid) {
+    if (uid === "__all__") {
+      const items = this.ents.filter((x) => x.kind === "pickup" && !x.dead && !x.taken && x.item);
+      for (const e of items) {
+        if ((this.hero?.inventory.length ?? 0) >= 60) {
+          this.toast("Inventory full");
+          break;
+        }
+        this.collect(e);
+      }
+      this.emit(true);
+      return;
+    }
     const e = this.ents.find(
       (x) => x.uid === uid || (x.item && x.item.uid === uid),
     );
-    if (e && e.kind === "pickup") this.collect(e);
+    if (e && e.kind === "pickup") {
+      this.collect(e);
+      this.emit(true);
+    }
+  }
+  setGraphics(tier) {
+    if (!["auto", "low", "high", "max"].includes(tier)) return;
+    this.save.settings.graphics = tier;
+    this.persist();
+    this.toast(`Graphics: ${tier} — reloading`);
+    // Quality binds at WebGL init; soft reload so Max/High take effect now.
+    setTimeout(() => location.reload(), 280);
   }
   useInteract() {
     this.interactScan();
@@ -921,14 +958,18 @@ export class Veilbreak {
     this.snapCamera();
   }
   clearLevel() {
+    // Keep the shared 3D hero mesh across town ↔ rift loads when possible.
+    const keepHero = this.player?.figure ?? null;
     for (const e of this.ents) {
-      if (e.figure) this.scene.remove(e.figure.root);
+      if (e.figure && e.figure !== keepHero) this.scene.remove(e.figure.root);
+      else if (e.figure === keepHero) this.scene.remove(e.figure.root);
       if (e.sprite) this.scene.remove(e.sprite);
       if (e.mesh && !e.figure) this.scene.remove(e.mesh);
       if (e.shadow) this.scene.remove(e.shadow);
       if (e.light) this.scene.remove(e.light);
       if (e.beam) this.vfx?.dropShaft(e.beam, e.light ?? null);
     }
+    this._keptHeroFigure = keepHero;
     this.ents = [];
     this.player = null;
     this.world?.clear();
@@ -944,7 +985,14 @@ export class Veilbreak {
     const e = this.makeSprite("player", x, z, [], 0.01, 16777215);
     if (e.sprite) e.sprite.visible = false;
     if (e.shadow) e.shadow.visible = false;
-    this.attachFigure(e, figureKindFor(cls.id), 1.05, false, false);
+    const kind = figureKindFor(cls.id);
+    const kept = this._keptHeroFigure;
+    this._keptHeroFigure = null;
+    if (kept) {
+      try { this.scene.remove(kept.root); } catch { /* already detached */ }
+    }
+    // Always spawn at DI silhouette scale so town/Tear match after size pass
+    this.attachFigure(e, kind, 1.22, false, false);
     e.team = 1;
     e.speed = cls.base.speed;
     e.r = 0.45;
@@ -975,6 +1023,10 @@ export class Veilbreak {
     e.elite = !!elite || def.elite;
     e.boss = !!boss || !!def.boss;
     e.champion = champ;
+    if (e.elite || e.boss) {
+      this.vfx?.softGround?.(x, z, e.boss ? 1.8 : 1.25, e.boss ? 0xff0055 : 0xff4477, 0.55);
+      this.vfx?.flash?.(x, z, e.boss ? 0xff2200 : 0xffcc44, e.boss ? 3.5 : 2.4, 0.2);
+    }
     e.team = 2;
     e.r = def.radius;
     e.speed = def.speed * (champ?.includes("fast") ? 1.55 : e.boss ? 1 : 1.22);
@@ -1258,6 +1310,7 @@ export class Veilbreak {
     p.iFrames = Math.max(0, p.iFrames - dt);
     p.invuln = Math.max(0, p.invuln - dt);
     p.atkCd = Math.max(0, p.atkCd - dt);
+    this.gcd = Math.max(0, this.gcd - dt);
     this.ultActive = Math.max(0, this.ultActive - dt);
     if (this.hp < this.hpChase)
       this.hpChase = Math.max(this.hp, this.hpChase - this.maxHp * dt * 0.55);
@@ -1336,8 +1389,10 @@ export class Veilbreak {
       let moveMul = 1;
       if (this.channel?.id === "whirlwind" || this.channel?.id === "bloodspin") {
         const fast = h.skillRunes.whirlwind || h.skillRunes.bloodspin;
-        moveMul *= fast ? 0.85 : 0.55;
-      } else if (this.aimingSlot >= 0) moveMul *= 0.85;
+        moveMul *= fast ? 0.95 : 0.78;
+      } else if (this.aimingSlot >= 0) moveMul *= 0.88;
+      // Heavy skill commit only — light primaries stay fluid (no sticky plant).
+      if (this.swingCommit > 0.08) moveMul *= 0.72;
       const spMul =
         (this.hasBuff("speed") || this.hasBuff("sprint") ? 1.4 : 1) *
         (this.hasBuff("archon") || this.hasBuff("wrath") || this.ultActive > 0
@@ -1348,31 +1403,48 @@ export class Veilbreak {
         wantVz = 0;
       if (mx || mz) {
         const m = Math.hypot(mx, mz) || 1;
-        wantVx = (mx / m) * spd;
-        wantVz = (mz / m) * spd;
+        // Stick magnitude scales top speed (keyboard is already unit).
+        const stick = steering ? Math.min(1, stickMag) : 1;
+        wantVx = (mx / m) * spd * stick;
+        wantVz = (mz / m) * spd * stick;
       }
-      const tau = wantVx || wantVz ? 0.08 : 0.1;
+      // DI-like: snappy start (~0.045s), soft stop without ice-skating (~0.12s).
+      const tau = wantVx || wantVz ? 0.045 : 0.12;
       const k = 1 - Math.exp(-dt / tau);
       p.vx += (wantVx - p.vx) * k;
       p.vz += (wantVz - p.vz) * k;
-      if (!wantVx && !wantVz && Math.hypot(p.vx, p.vz) < 0.08) {
+      if (!wantVx && !wantVz && Math.hypot(p.vx, p.vz) < 0.12) {
         p.vx = 0;
         p.vz = 0;
       }
+      const wantFaceAtk = (a.primary || this.autoCombat) && !a.forceMove;
+      const lock = wantFaceAtk ? this.softLockTarget(14) : null;
+      const setFace = (ang, instant = false) => {
+        if (instant) p.facing = ang;
+        else {
+          let d = ang - p.facing;
+          while (d > Math.PI) d -= Math.PI * 2;
+          while (d < -Math.PI) d += Math.PI * 2;
+          // Quick turn blend — responsive, not tank-steering
+          p.facing += d * (1 - Math.exp(-dt * 16));
+        }
+        this.yaw = p.facing;
+      };
       if (this.aimingSlot >= 0) {
         const { ux, uz } = this.aimDir(true);
-        p.facing = Math.atan2(-ux, -uz);
-        this.yaw = p.facing;
+        setFace(Math.atan2(-ux, -uz), true);
+      } else if (lock) {
+        // Soft-lock: snap face to target so strafe-kite never moonwalks
+        setFace(Math.atan2(-(lock.x - p.x), -(lock.z - p.z)), true);
+        this.target = lock;
+        this.softLock = lock;
       } else if (steering && (p.vx || p.vz)) {
-        p.facing = Math.atan2(-p.vx, -p.vz);
-        this.yaw = p.facing;
+        setFace(Math.atan2(-p.vx, -p.vz));
       } else if (a.primary) {
-        const { ux, uz } = this.aimDir(true);
-        p.facing = Math.atan2(-ux, -uz);
-        this.yaw = p.facing;
+        const { ux, uz } = this.aimDir(false);
+        setFace(Math.atan2(-ux, -uz), true);
       } else if (this.dest && (p.vx || p.vz)) {
-        p.facing = Math.atan2(-p.vx, -p.vz);
-        this.yaw = p.facing;
+        setFace(Math.atan2(-p.vx, -p.vz));
       }
       this.speed = Math.hypot(p.vx, p.vz);
       if (this.hitstop <= 0) this.moveEnt(p, dt);
@@ -1383,6 +1455,10 @@ export class Veilbreak {
     const locked =
       !!this.channel &&
       (this.channel.id === "whirlwind" || this.channel.id === "bloodspin");
+    if (a.autoCombatJust) {
+      this.autoCombat = !this.autoCombat;
+      this.toast(this.autoCombat ? "Auto-combat on" : "Auto-combat off");
+    }
     for (let i = 0; i < 4; i++) {
       const sk = equipped[i];
       if (!sk) continue;
@@ -1396,42 +1472,40 @@ export class Veilbreak {
             sk.cooldown * (1 - Math.min(0.5, this.stat("cdr") / 100));
         }
       } else {
-        if (a.skillJust[i] && !locked) {
-          this.aimingSlot = i;
-          this.aimHoldT = 0;
+        const groundAim =
+          sk.kind === "aoe" || sk.kind === "nova" || sk.kind === "dash" || sk.kind === "beam";
+        // DI cadence: tap soft-locks; hold shows telegraph then fires on release
+        if (a.skillJust[i] && (!locked || sk.kind === "dash")) {
+          if (groundAim && !locked) {
+            this.aimingSlot = i;
+            this.aimHoldT = 0;
+          } else if (this.gcd <= 0 || sk.kind === "dash") {
+            this.castSkill(sk, false, 1);
+          }
         }
         if (this.aimingSlot === i && a.skills[i]) {
           this.aimHoldT += dt;
-          const chargeT = Math.max(0, this.aimHoldT - 0.12);
-          const charged = chargeT >= 0.55;
-          const { ux, uz } = this.aimDir(true);
+          const chargeT = Math.max(0, this.aimHoldT - 0.1);
+          const charged = chargeT >= 0.4;
+          const { ux, uz } = this.aimDir(this.aimHoldT >= 0.12);
           p.facing = Math.atan2(-ux, -uz);
+          const hold = Math.min(1, chargeT / 0.4);
+          const range = (sk.range || 6) * (0.9 + hold * 0.2);
+          const rad = (sk.radius || 2.5) * (0.95 + hold * 0.2);
           const shape =
             sk.kind === "dash" || sk.kind === "beam"
               ? "line"
               : sk.kind === "melee"
                 ? "cone"
                 : "circle";
-          const hold = Math.min(1, chargeT / 0.55);
-          const range = sk.range * (0.85 + hold * 0.25);
-          const rad = (sk.radius || 2) * (0.9 + hold * 0.25);
-          this.vfx?.setAim(
-            shape,
-            p.x,
-            p.z,
-            p.facing,
-            range,
-            rad,
-            charged,
-          );
+          this.vfx?.setAim(shape, p.x, p.z, p.facing, range, rad, charged);
         }
         if (a.skillReleased[i] && this.aimingSlot === i) {
-          const chargeT = Math.max(0, this.aimHoldT - 0.12);
-          const chargeMul =
-            this.aimHoldT < 0.12
-              ? 1
-              : 1 + Math.min(1, chargeT / 0.55) * 0.35;
-          this.castSkill(sk, true, chargeMul);
+          const tap = this.aimHoldT < 0.14;
+          const chargeT = Math.max(0, this.aimHoldT - 0.1);
+          const chargeMul = tap ? 1 : 1 + Math.min(1, chargeT / 0.4) * 0.35;
+          // Tap = soft-lock directed; hold = aimed at cursor/stick
+          this.castSkill(sk, !tap, chargeMul);
           this.aimingSlot = -1;
           this.aimHoldT = 0;
           this.vfx?.clearAim();
@@ -1465,27 +1539,41 @@ export class Veilbreak {
           );
       }
     }
-    const wantAtk = a.primary && !a.forceMove && !this.dash;
+    const wantAtk =
+      !a.forceMove &&
+      !this.dash &&
+      this.aimingSlot < 0 &&
+      (a.primary || this.autoCombat);
     if (p.atkCd <= 0 && wantAtk) {
-      const t =
-        this.nearestInCone(primary.range + 1.2, p.facing, Math.PI / 4) ??
-        this.nearestEnemy(primary.range + 1.2);
+      const reach =
+        primary.range +
+        (primary.kind === "projectile" || primary.kind === "beam" ? 1.5 : 1.35);
+      const t = this.softLockTarget(reach);
       if (t) {
-        const d = Math.hypot(t.x - p.x, t.z - p.z);
-        if (d < primary.range + 1.2)
-          p.facing = Math.atan2(-(t.x - p.x), -(t.z - p.z));
+        p.facing = Math.atan2(-(t.x - p.x), -(t.z - p.z));
+        this.yaw = p.facing;
         this.autoAttack(t, primary);
+      } else if (a.primary && (primary.kind === "projectile" || primary.kind === "beam")) {
+        // Still fire into facing when holding attack with no target (DI caster feel)
+        this.autoAttack(null, primary);
       }
     }
-    if (this.potionHot > 0) p.figure?.glow(0x44ff88, 0.12);
-    const look = this.nearestEnemy(10);
+    if (this.potionHot > 0) p.figure?.glow(0xffc878, 0.08);
+    const look = this.softLockTarget(12) ?? this.nearestEnemy(10);
     this.target =
-      look && Math.hypot(look.x - p.x, look.z - p.z) < 9
+      look && Math.hypot(look.x - p.x, look.z - p.z) < 11
         ? look
         : this.target && !this.target.dead
           ? this.target
           : null;
     if (this.target?.dead) this.target = null;
+    this.softLock = this.target;
+    {
+      const lock = this.softLock;
+      if (lock && !lock.dead && this.screen === "playing")
+        this.vfx?.setSoftLock?.(lock.x, lock.z, true);
+      else this.vfx?.setSoftLock?.(0, 0, false);
+    }
     this.regen(dt);
     this.ai(dt);
     this.projectiles(dt);
@@ -1494,7 +1582,24 @@ export class Veilbreak {
     this.noteRoom();
     this.interactScan();
     if (a.interactJust && this.interactEnt) this.doInteract(this.interactEnt);
-    this.trauma = Math.max(0, this.trauma - dt * 1.8);
+    this.trauma = Math.max(0, this.trauma - dt * 2.15);
+    if (this.trauma > 0.85) this.trauma -= dt * 0.8;
+    if (this.hurtFlash > 0) this.hurtFlash = Math.max(0, this.hurtFlash - dt);
+    this.swingCommit = Math.max(0, this.swingCommit - dt);
+    // Foot scuffs while moving — DI ground chatter
+    if (p && !p.dead) {
+      const spd = Math.hypot(p.vx ?? 0, p.vz ?? 0);
+      this.footDustT -= dt;
+      if (spd > 2.2 && this.footDustT <= 0) {
+        this.footDustT = spd > 4.5 ? 0.09 : 0.14;
+        this.vfx?.footDust?.(p.x, p.z, spd);
+      }
+    }
+    // Directional kick decays fast — punchy, not sticky
+    this.camKickX *= Math.max(0, 1 - dt * 9);
+    this.camKickZ *= Math.max(0, 1 - dt * 9);
+    if (Math.abs(this.camKickX) < 0.002) this.camKickX = 0;
+    if (Math.abs(this.camKickZ) < 0.002) this.camKickZ = 0;
     if (this.flashT > 0) this.flashT -= dt;
     else this.legendaryFlash = null;
     this.tickParticles(dt);
@@ -1570,10 +1675,12 @@ export class Veilbreak {
       this.dash = null;
       return;
     }
-    const prev = d.t / d.max;
+    // Ease-out displacement: hard launch, soft arrival into control
+    const ease = (t) => 1 - Math.pow(1 - Math.min(1, Math.max(0, t)), 2.15);
+    const prevU = ease(d.t / d.max);
     d.t += dt;
     const u = Math.min(1, d.t / d.max);
-    const stepDist = d.dist * (u - prev);
+    const stepDist = d.dist * (ease(u) - prevU);
     p.x += d.ux * stepDist;
     p.z += d.uz * stepDist;
     const r = resolveWalls(p.x, p.z, p.r, this.level.walls);
@@ -1596,15 +1703,21 @@ export class Veilbreak {
     if (p.shadow) p.shadow.position.set(p.x, 0.05, p.z);
     if (u >= 1 || d.t >= d.max) {
       p.hopY = 0;
-      p.iFrames = 0;
-      p.vx = 0;
-      p.vz = 0;
+      p.iFrames = Math.max(p.iFrames, 0.1); // brief landing immunity
+      // Carry a slice of dash velocity into walk — full control, no sticky plant
+      const carry = (d.dist / Math.max(0.05, d.max)) * 0.38;
+      p.vx = d.ux * carry;
+      p.vz = d.uz * carry;
+      p.atkCd = Math.min(p.atkCd, 0.05);
       this.dealRadius(p.x, p.z, d.radius, d.dmg, { knock: d.knock });
       if (d.rune && (d.skillId === "leap" || d.skillId === "warleap"))
         this.dealRadius(p.x, p.z, d.radius + 0.6, d.dmg * 0.5);
-      this.trauma += d.skillId === "leap" || d.skillId === "warleap" ? 0.45 : 0.28;
-      this.hitstop = Math.max(this.hitstop, 0.028);
-      this.post?.punch(0.0024, 0.12);
+      this.trauma = Math.min(
+        1.15,
+        this.trauma + (d.skillId === "leap" || d.skillId === "warleap" ? 0.52 : 0.34),
+      );
+      this.hitstop = Math.max(this.hitstop, d.skillId === "leap" || d.skillId === "warleap" ? 0.045 : 0.034);
+      this.post?.punch(0.0024, 0.15);
       this.vfx?.leap(p.x, p.z);
       this.vfx?.shock(p.x, p.z, 0xffaa44);
       this.dash = null;
@@ -1721,11 +1834,13 @@ export class Veilbreak {
       mag: 1,
     });
     const p = this.player;
-    this.burst(p.x, 1.3, p.z, 16763989, 28);
-    this.vfx?.burst(p.x, 1.3, p.z, 0xffcc55, 22, "ember");
-    this.vfx?.ring(p.x, p.z, 0xffcc66, 7, 0.5);
-    this.post?.punch(0.0032, 0.18);
-    this.trauma += 0.4;
+    this.burst(p.x, 1.3, p.z, 16763989, 32);
+    this.vfx?.burst(p.x, 1.3, p.z, 0xffcc55, 24, "ember");
+    this.vfx?.burst(p.x, 1.5, p.z, 0xffe8aa, 12, "soul");
+    this.vfx?.nova(p.x, p.z, 0xffcc66);
+    this.post?.punch(0.0032, 0.22);
+    this.trauma = Math.min(1.15, this.trauma + 0.5);
+    this.hitstop = Math.max(this.hitstop, 0.04);
     this.audio.swing();
   }
   aimDir(aimed) {
@@ -1751,6 +1866,10 @@ export class Veilbreak {
     const h = this.hero;
     const p = this.player;
     if ((h.skillRanks[skill.id] ?? 0) < 1) return;
+    // Dashes / mobility cancel channels (DI cancel-into-skill)
+    if (this.channel && skill.kind === "dash") {
+      this.channel = null;
+    }
     if (
       this.channel &&
       skill.id !== this.channel.id &&
@@ -1760,6 +1879,8 @@ export class Veilbreak {
     if (skill.charges) {
       if ((this.skillCharges[skill.id] ?? 0) <= 0) return;
     } else if ((this.skillCd[skill.id] ?? 0) > 0 && skill.kind !== "channel")
+      return;
+    if (this.gcd > 0 && skill.kind !== "dash" && skill.kind !== "channel")
       return;
     const rank = h.skillRanks[skill.id] ?? 1;
     const rune = !!h.skillRunes[skill.id];
@@ -1777,8 +1898,20 @@ export class Veilbreak {
         this.skillChargeCd[skill.id] = skill.chargeCd ?? skill.cooldown;
     } else if (skill.kind !== "channel")
       this.skillCd[skill.id] = skill.cooldown * (1 - Math.min(0.5, cdr));
+    // Soft-lock directed skills toward nearest hostile when not ground-aimed
+    if (!aimed) {
+      const lock = this.softLockTarget((skill.range || 10) + 2);
+      if (lock) {
+        this.target = lock;
+        this.softLock = lock;
+      }
+    }
     const { ux, uz, mag } = this.aimDir(aimed);
     p.facing = Math.atan2(-ux, -uz);
+    this.yaw = p.facing;
+    this.gcd = skill.kind === "dash" ? 0.05 : 0.12;
+    const col = this.skillColor(skill);
+    this.audio.skillCast?.(skill.kind === "aoe" || skill.kind === "nova" || skill.kind === "dash");
     if (
       skill.kind === "dash" ||
       skill.id === "charge" ||
@@ -1793,7 +1926,7 @@ export class Veilbreak {
         (1 + holdBoost);
       const dur =
         skill.duration ||
-        (skill.id === "leap" || skill.id === "warleap" ? 0.28 : 0.22);
+        (skill.id === "leap" || skill.id === "warleap" ? 0.26 : 0.18);
       const peak =
         skill.id === "leap" || skill.id === "warleap" ? 1.1 : 0;
       this.dash = {
@@ -1810,12 +1943,15 @@ export class Veilbreak {
         rune,
         landed: false,
       };
-      p.iFrames = dur * (this.hasPower("dashIframes") ? 1.4 : 1);
+      p.iFrames = dur * (this.hasPower("dashIframes") ? 1.55 : 1.15);
       p.facing = Math.atan2(-ux, -uz);
       this.yaw = p.facing;
       this.camLagT = 0.16;
       this.dest = null;
+      p.atkCd = Math.min(p.atkCd, 0.08); // cancel into primary
       p.figure?.playAttack();
+      this.vfx?.trail?.(p.x, 0.9, p.z, col);
+      this.vfx?.flash?.(p.x, p.z, col, 2.4, 0.1);
       this.audio.swing();
       return;
     }
@@ -1868,20 +2004,28 @@ export class Veilbreak {
         max: skill.duration || 4,
       };
       this.dealRadius(p.x, p.z, skill.radius, skill.damage * dmgMul);
+      this.vfx?.whirl(p.x, p.z);
+      this.vfx?.ring(p.x, p.z, 0x6a3a22, 2.2, 0.16);
+      this.trauma = Math.min(0.9, this.trauma + 0.14);
       if (this.hasPower("whirlwindTrail"))
         this.groundHazard(p.x, p.z, 1.4, 1.6, 10 * dmgMul);
       return;
     }
     if (skill.kind === "nova" || skill.id === "stomp") {
+      this.vfx?.softGround?.(p.x, p.z, skill.radius, col, 0.28);
       this.dealRadius(p.x, p.z, skill.radius, skill.damage * dmgMul, {
-        stun: skill.id === "stomp" ? 1.2 : 0,
+        stun: skill.id === "stomp" || skill.id === "frostbloom" ? 1.15 : 0,
         knock: 4,
       });
-      this.burst(p.x, 1, p.z, 16737826, 24);
-      this.vfx?.shock(p.x, p.z, 0xff6622);
-      this.trauma += 0.4;
-      this.hitstop = 0.032;
-      this.post?.punch(0.002, 0.1);
+      if (skill.id === "frostbloom")
+        this.applyCCRadius(p.x, p.z, skill.radius, "freeze", 1.4);
+      this.burst(p.x, 1, p.z, col, 28);
+      this.vfx?.nova(p.x, p.z, col);
+      this.trauma = Math.min(1.15, this.trauma + 0.52);
+      this.hitstop = Math.max(this.hitstop, 0.05);
+      this.post?.punch(0.0022, 0.16);
+      this.camKick(0.01, 0.01, 0.12);
+      this.swingCommit = Math.max(this.swingCommit, 0.12);
       this.audio.hit(true);
       return;
     }
@@ -1910,24 +2054,42 @@ export class Veilbreak {
         this.hp = Math.min(this.maxHp, this.hp + heal);
         this.floatNum(p.x, 2.2, p.z, Math.round(heal), false, false, "heal");
       }
-      this.fxSlash(hx, hz);
+      this.fxSlash(hx, hz, true);
+      this.vfx?.decal?.(hx, hz, 0x3a2010, 0.9, 0.7, 0.28);
       p.attackT = 0.28;
-      p.figure?.playAttack();
+      p.figure?.playAttack(true);
       this.audio.swing();
       return;
     }
     if (skill.kind === "aoe") {
-      const tx = p.x + ux * Math.min(skill.range, mag);
-      const tz = p.z + uz * Math.min(skill.range, mag);
+      const tx = p.x + ux * Math.min(skill.range || 8, mag || skill.range || 8);
+      const tz = p.z + uz * Math.min(skill.range || 8, mag || skill.range || 8);
+      this.vfx?.softGround?.(tx, tz, skill.radius, col, 0.32);
       this.dealRadius(tx, tz, skill.radius, skill.damage * dmgMul, {
         knock: 3,
         stun: skill.id === "hota" || skill.id === "earthsplitter" ? 0.7 : 0,
       });
-      if (skill.id === "hota") {
-        this.trauma += 0.55;
-        this.hitstop = 0.032;
+      if (skill.id === "hota" || skill.id === "earthsplitter") {
+        this.trauma = Math.min(1.15, this.trauma + 0.58);
+        this.hitstop = Math.max(this.hitstop, 0.055);
         this.vfx?.shock(tx, tz, 0xffaa44);
-        this.post?.punch(0.0022, 0.1);
+        this.vfx?.burst(tx, 0.8, tz, 0xffe8a0, 12, "spark");
+        this.post?.punch(0.0022, 0.16);
+        this.camKick(tx - p.x, tz - p.z, 0.16);
+        this.swingCommit = Math.max(this.swingCommit, 0.14);
+      } else {
+        const col =
+          skill.id === "consecrate" || skill.id === "sanctuary"
+            ? 0xffe8aa
+            : skill.id === "caltrops"
+              ? 0x88aa66
+              : skill.id === "decrepify"
+                ? 0x8844aa
+                : 0xff8844;
+        this.vfx?.ring(tx, tz, col, 5.5, 0.32);
+        this.vfx?.decal?.(tx, tz, col, skill.radius * 0.55, 0.9, 0.28);
+        this.vfx?.burst(tx, 0.7, tz, col, 10, "ember");
+        this.trauma = Math.min(1.0, this.trauma + 0.22);
       }
       if (skill.id === "demoralize")
         this.applyCCRadius(tx, tz, skill.radius, "snare", 3);
@@ -1945,7 +2107,7 @@ export class Veilbreak {
           skill.damage * 8 * dmgMul,
           skill.id,
         );
-      this.burst(tx, 0.6, tz, 16755268, 18);
+      this.burst(tx, 0.6, tz, 16755268, 20);
       this.audio.hit(false);
       return;
     }
@@ -1963,7 +2125,7 @@ export class Veilbreak {
         const ang = Math.atan2(uz, ux) + (i - (n - 1) / 2) * spread;
         this.fireProj(p, Math.cos(ang), Math.sin(ang), skill, dmgMul, rune);
       }
-      if (skill.kind === "beam")
+      if (skill.kind === "beam") {
         this.dealBeam(
           p.x,
           p.z,
@@ -1973,7 +2135,29 @@ export class Veilbreak {
           skill.radius,
           skill.damage * dmgMul,
         );
+        const beamCol =
+          skill.id === "beam"
+            ? 0xaa66ff
+            : skill.id === "heavens"
+              ? 0xffe8aa
+              : 0x88ccff;
+        this.vfx?.beam(p.x, p.z, ux, uz, skill.range, beamCol);
+        this.trauma = Math.min(1.0, this.trauma + 0.18);
+        this.post?.punch(0, 0.08);
+      } else {
+        // Projectile muzzle flash / trail seed
+        this.vfx?.burst(p.x + ux * 0.6, 1.0, p.z + uz * 0.6, 0xffe8a0, 5, "spark");
+        this.vfx?.flash(p.x + ux * 0.5, p.z + uz * 0.5, 0xffcc88, 2.0, 0.08);
+      }
       this.audio.swing();
+      return;
+    }
+    if (skill.kind === "summon") {
+      this.summonPets(skill.id, rune);
+      this.vfx?.nova(p.x, p.z, col);
+      this.burst(p.x, 1.1, p.z, col, 18);
+      this.audio.skillCast?.(true);
+      return;
     }
   }
   cast(slot) {
@@ -1983,13 +2167,14 @@ export class Veilbreak {
   }
   fireProj(owner, ux, uz, skill, dmgMul, rune) {
     const frames = this.frames.fire ?? this.frames.slash ?? [];
+    const col = this.skillColor?.(skill) ?? 16777215;
     const e = this.makeSprite(
       "projectile",
       owner.x + ux * 0.8,
       owner.z + uz * 0.8,
       frames,
       0.9,
-      16777215,
+      col,
     );
     e.kind = "projectile";
     e.vx = ux * 16;
@@ -2050,39 +2235,135 @@ export class Veilbreak {
       e.name = "pet";
     }
   }
+  /** Directional camera punch — kick opposite the impact for DI weight. */
+  camKick(dx, dz, amount = 0.1) {
+    const m = Math.hypot(dx, dz) || 1;
+    const a = Math.min(0.22, amount);
+    this.camKickX = Math.max(-0.35, Math.min(0.35, this.camKickX - (dx / m) * a));
+    this.camKickZ = Math.max(-0.35, Math.min(0.35, this.camKickZ - (dz / m) * a));
+  }
+  softLockTarget(range) {
+    const p = this.player;
+    if (!p) return null;
+    const sticky = this.softLock && !this.softLock.dead && !this.softLock.corpse
+      ? this.softLock
+      : this.target && !this.target.dead && !this.target.corpse
+        ? this.target
+        : null;
+    if (sticky && sticky.team === 2) {
+      const d = Math.hypot(sticky.x - p.x, sticky.z - p.z);
+      if (d <= range + 0.6) {
+        // Keep sticky if still roughly in front half-plane or very close
+        const fx = -Math.sin(p.facing);
+        const fz = -Math.cos(p.facing);
+        const dx = sticky.x - p.x;
+        const dz = sticky.z - p.z;
+        const dot = d < 0.05 ? 1 : (dx * fx + dz * fz) / d;
+        if (dot > -0.15 || d < range * 0.55) return sticky;
+      }
+    }
+    // Prefer nearest hostile in a wide forward cone (DI soft-lock)
+    return (
+      this.nearestInCone(range, p.facing, Math.PI / 2.05) ??
+      this.nearestEnemy(range)
+    );
+  }
+  skillColor(skill) {
+    const hex = (skill?.color || "#ffaa66").replace("#", "");
+    const n = parseInt(hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex.slice(0, 6), 16);
+    return Number.isFinite(n) ? n : 0xffaa66;
+  }
   autoAttack(t, skill) {
     const p = this.player;
     const prim = skill ?? this.kit().primary;
     const empowered = this.ultActive > 0;
     p.atkCd =
-      (prim.cooldown || 0.42) *
+      (prim.cooldown || 0.32) *
       (1 - Math.min(0.4, this.stat("cdr") / 200)) *
-      (empowered ? 0.82 : 1);
+      (empowered ? 0.8 : 1);
     const dmg = this.outDmg() * prim.damage * (empowered ? 1.55 : 1);
-    this.dealCone(
-      p.x,
-      p.z,
-      p.facing,
-      prim.range,
-      Math.PI / 4,
-      dmg,
-      { knock: 1.4 },
-    );
+    const col = this.skillColor(prim);
+    let ux = -Math.sin(p.facing);
+    let uz = -Math.cos(p.facing);
+    if (t) {
+      const m = Math.hypot(t.x - p.x, t.z - p.z) || 1;
+      ux = (t.x - p.x) / m;
+      uz = (t.z - p.z) / m;
+      p.facing = Math.atan2(-ux, -uz);
+      this.yaw = p.facing;
+      this.target = t;
+      this.softLock = t;
+    }
+    if (prim.kind === "projectile") {
+      const n =
+        prim.id === "multishot"
+          ? this.hasPower("multishotPlus") || this.hero?.skillRunes.multishot
+            ? 7
+            : 5
+          : prim.id === "shards" && this.hero?.skillRunes.shards
+            ? 5
+            : prim.id === "shards"
+              ? 3
+              : 1;
+      const spread = n > 1 ? 0.2 : 0;
+      const mul = empowered ? 1.55 : 1;
+      for (let i = 0; i < n; i++) {
+        const ang = Math.atan2(uz, ux) + (i - (n - 1) / 2) * spread;
+        this.fireProj(p, Math.cos(ang), Math.sin(ang), prim, this.outDmg() * mul, !!this.hero?.skillRunes[prim.id]);
+      }
+      this.vfx?.burst(p.x + ux * 0.55, 1.0, p.z + uz * 0.55, col, 6, "spark");
+      this.vfx?.flash(p.x + ux * 0.45, p.z + uz * 0.45, col, 2.2, 0.08);
+      this.swingCommit = Math.max(this.swingCommit, 0.02);
+      this.camKick(-ux * 0.04, -uz * 0.04, 0.04);
+      p.attackT = 0.18;
+      p.figure?.playAttack();
+      this.audio.swing();
+      this.ultCharge = Math.min(1, this.ultCharge + (empowered ? 0 : 1 / 16));
+      return;
+    }
+    if (prim.kind === "beam") {
+      this.dealBeam(p.x, p.z, ux, uz, prim.range, prim.radius, dmg);
+      this.vfx?.beam(p.x, p.z, ux, uz, prim.range, col);
+      this.swingCommit = Math.max(this.swingCommit, 0.02);
+      p.attackT = 0.14;
+      p.figure?.playAttack();
+      this.audio.swing();
+      this.ultCharge = Math.min(1, this.ultCharge + (empowered ? 0 : 1 / 18));
+      return;
+    }
+    // Melee primary — wide DI cleave; tiny step-in (was sticky lunge)
+    const lunge = t ? Math.min(0.22, Math.hypot(t.x - p.x, t.z - p.z) * 0.1) : 0.1;
+    p.x += ux * lunge;
+    p.z += uz * lunge;
+    if (this.level) {
+      const r = resolveWalls(p.x, p.z, p.r, this.level.walls);
+      p.x = r.x;
+      p.z = r.z;
+    }
+    this.dealCone(p.x, p.z, p.facing, prim.range, Math.PI / 3.1, dmg, {
+      knock: 1.65,
+    });
     if (prim.id === "cleave")
       this.applyDoTRadius(p.x, p.z, prim.radius, dmg * 0.12, 2);
-    if (prim.id === "lacerate") {
+    if (prim.id === "lacerate" && t) {
       const heal = this.maxHp * 0.03;
       this.hp = Math.min(this.maxHp, this.hp + heal);
       this.floatNum(p.x, 2.2, p.z, Math.round(heal), false, false, "heal");
     }
-    this.fxSlash((p.x + t.x) / 2, (p.z + t.z) / 2);
-    p.attackT = 0.28;
-    p.figure?.playAttack();
+    const hx = t ? (p.x + t.x) / 2 : p.x + ux * 1.2;
+    const hz = t ? (p.z + t.z) / 2 : p.z + uz * 1.2;
+    this.fxSlash(hx, hz, empowered);
+    this.vfx?.slash?.(hx, hz, p.facing, { color: col, heavy: empowered });
+    // Light primary: no move lock. Heavy ult swing gets a whisper of weight.
+    this.swingCommit = Math.max(this.swingCommit, empowered ? 0.06 : 0.02);
+    this.camKick(ux * 0.08, uz * 0.08, 0.06);
+    p.attackT = 0.24;
+    p.figure?.playAttack(!!empowered);
     this.audio.swing();
-    this.target = t;
     if (empowered) {
-      this.burst((p.x + t.x) / 2, 0.9, (p.z + t.z) / 2, 16763989, 8);
-      this.vfx?.burst((p.x + t.x) / 2, 0.9, (p.z + t.z) / 2, 0xffcc55, 8, "ember");
+      this.burst(hx, 0.9, hz, 16763989, 12);
+      this.vfx?.burst(hx, 0.9, hz, 0xffcc55, 12, "ember");
+      this.vfx?.flash(hx, hz, 0xffe066, 2.8, 0.12);
     }
     this.ultCharge = Math.min(1, this.ultCharge + (empowered ? 0 : 1 / 14));
   }
@@ -2164,9 +2445,16 @@ export class Veilbreak {
               uz = dz / dist;
             this.fireEnemyBolt(e, ux, uz);
           } else if (e.windupKind === "swing") {
-            if (dist < 2.2 && p.iFrames <= 0 && p.invuln <= 0) {
-              this.hurtPlayer(e.dmg ?? 8);
-              if (e.champion?.includes("frozen")) this.applyCC(p, "freeze", 0.6);
+            // Damage only after telegraph completes — DI clarity
+            if (dist < 2.45 && p.iFrames <= 0 && p.invuln <= 0) {
+              const fx = -Math.sin(e.facing);
+              const fz = -Math.cos(e.facing);
+              const dot = dist < 0.05 ? 1 : (dx * fx + dz * fz) / dist;
+              if (dot > Math.cos(Math.PI / 2.4)) {
+                this.hurtPlayer((e.dmg ?? 8) * (e.elite || e.boss ? 1.15 : 1));
+                if (e.champion?.includes("frozen")) this.applyCC(p, "freeze", 0.6);
+                this.vfx?.flash?.(p.x, p.z, 0xff4422, 2.2, 0.1);
+              }
             }
           }
           e.windupKind = "";
@@ -2179,25 +2467,46 @@ export class Veilbreak {
           const ddx = e.x - o.x;
           const ddz = e.z - o.z;
           const dm = Math.hypot(ddx, ddz) || 0.01;
-          if (dm < 1.6) {
+          // Slight separation only — packs stay clumped for cleave
+          if (dm < 1.05) {
             sx += ddx / dm;
             sz += ddz / dm;
           }
         }
-        e.vx = (dx / dist) * e.speed + sx * 1.2;
-        e.vz = (dz / dist) * e.speed + sz * 1.2;
+        e.vx = (dx / dist) * e.speed + sx * 0.65;
+        e.vz = (dz / dist) * e.speed + sz * 0.65;
         e.facing = Math.atan2(-e.vx, -e.vz);
       } else {
         e.vx = 0;
         e.vz = 0;
         e.facing = Math.atan2(-dx, -dz);
         if (e.atkCd <= 0 && p.iFrames <= 0 && p.invuln <= 0) {
-          const wind = 0.7 + this.rng.next() * 0.4;
+          const elite = !!(e.elite || e.boss);
+          const wind = elite
+            ? 0.65 + this.rng.next() * 0.35
+            : 0.42 + this.rng.next() * 0.22;
           e.windup = wind;
-          e.atkCd = (e.boss ? 1.8 : ranged ? 2.2 : 1.15) + wind;
+          e.atkCd = (e.boss ? 1.6 : ranged ? 1.9 : 0.95) + wind;
           e.windupKind = ranged ? "ranged" : "swing";
-          if (ranged) this.vfx?.warnCircle(p.x, p.z, 0.9, wind);
-          else this.vfx?.warnCircle(e.x + (dx / dist) * 1.1, e.z + (dz / dist) * 1.1, 1.15, wind);
+          this.audio.telegraph?.();
+          if (ranged) this.vfx?.warnCircle(p.x, p.z, 1.05, wind);
+          else {
+            e.facing = Math.atan2(-dx, -dz);
+            this.vfx?.warnCone?.(
+              e.x,
+              e.z,
+              e.facing,
+              2.35,
+              Math.PI / 3.0,
+              wind,
+            );
+            this.vfx?.warnCircle(
+              e.x + (dx / dist) * 1.2,
+              e.z + (dz / dist) * 1.2,
+              elite ? 1.35 : 1.05,
+              wind,
+            );
+          }
         }
       }
       this.moveEnt(e, dt);
@@ -2256,6 +2565,19 @@ export class Veilbreak {
         }
       }
       this.moveEnt(e, dt);
+      if (!e.hostile && Math.random() < 0.55 * (this.quality?.particles ?? 1)) {
+        const trailCol =
+          e.skillId === "spirit"
+            ? 0xaaccff
+            : e.skillId === "shards" || e.skillId === "beam"
+              ? 0x66ccff
+              : e.skillId === "bonespear"
+                ? 0xccffcc
+                : e.skillId === "multishot" || e.skillId === "impale"
+                  ? 0x88cc44
+                  : 0xffcc88;
+        this.vfx?.trail(e.x, 0.85, e.z, trailCol);
+      }
       if ((e.ttl ?? 0) <= 0) {
         e.dead = true;
         if (e.sprite) this.scene.remove(e.sprite);
@@ -2392,7 +2714,11 @@ export class Veilbreak {
     }
     if (e.item) {
       if (h.inventory.length >= 60) {
-        this.toast("Inventory full");
+        e.taken = false;
+        if (!e.fullNoted) {
+          this.toast("Inventory full");
+          e.fullNoted = true;
+        }
         return;
       }
       if (!e.item.identified && e.item.rarity !== "normal") {
@@ -2403,6 +2729,8 @@ export class Veilbreak {
         this.audio.legendary();
         this.legendaryFlash = e.item.name;
         this.flashT = 1.6;
+        this.hitstop = Math.max(this.hitstop, 0.06);
+        this.trauma = Math.min(1.2, this.trauma + 0.4);
         h.stats.legendaries += 1;
       } else this.audio.pickup();
     }
@@ -2726,7 +3054,7 @@ export class Veilbreak {
     if (e.corpse) return;
     e.corpse = true;
     const h = this.hero;
-    const n = 2 + this.rng.int(0, 2);
+    const n = 1 + this.rng.int(0, 1);
     for (let i = 0; i < n; i++) this.dropLoot(e.x, e.z, false, false);
     this.dropGold(e.x, e.z, 20 + h.level * 3);
     this.quest("collect", "relic", 1);
@@ -2764,8 +3092,8 @@ export class Veilbreak {
             const dx = e.x - x,
               dz = e.z - z,
               m = Math.hypot(dx, dz) || 1;
-            e.x += (dx / m) * extra.knock * 0.15;
-            e.z += (dz / m) * extra.knock * 0.15;
+            e.x += (dx / m) * extra.knock * 0.28;
+            e.z += (dz / m) * extra.knock * 0.28;
           }
           if (extra?.stun) this.applyCC(e, "stun", extra.stun);
           if (e.elite && (extra?.knock || extra?.stun)) e.knockLock = 3;
@@ -2818,21 +3146,52 @@ export class Veilbreak {
     const crit = !isDot && this.rng.chance(Math.min(0.75, critC / 100));
     if (crit) {
       dmg *= 1.5 + this.stat("critDmg") / 100;
-      this.hitstop = Math.max(this.hitstop, 0.018);
-      this.trauma += 0.16;
-      this.vfx?.flash(e.x, e.z, 0xffcc55, 2.6, 0.1);
     }
-    if (e.boss) this.trauma += 0.08;
+    const heavy = !isDot && (crit || dmg > 40 || e.boss || e.elite);
+    // Hitstop scales with damage / crit — brief, punchy, never sticky
+    if (!isDot) {
+      const stop = Math.min(
+        crit ? 0.07 : 0.042,
+        0.014 + Math.min(0.036, dmg / 950) + (crit ? 0.02 : 0) + (e.boss ? 0.012 : 0),
+      );
+      this.hitstop = Math.max(this.hitstop, stop);
+      this.trauma = Math.min(
+        1.1,
+        this.trauma +
+          (crit ? 0.2 : 0.07) +
+          (e.boss ? 0.12 : e.elite ? 0.055 : 0) +
+          Math.min(0.1, dmg / 750),
+      );
+      if (heavy) this.post?.punch(0, crit ? 0.13 : 0.06);
+      // Directional kick toward the struck foe
+      if (this.player) {
+        const dx = e.x - this.player.x;
+        const dz = e.z - this.player.z;
+        this.camKick(dx, dz, crit ? 0.12 : heavy ? 0.08 : 0.035);
+      }
+      // Trash packs flinch on heavy — elites resist via knockLock / CC DR
+      if (heavy && !e.elite && !e.boss && !(e.cc && e.cc.t > 0)) {
+        this.applyCC(e, "stun", crit ? 0.18 : 0.12);
+      }
+    } else if (e.boss) {
+      this.trauma += 0.04;
+    }
     e.hp -= dmg;
     this.floatNum(e.x, (e.figure?.height ?? e.scale) + 0.4, e.z, Math.round(dmg), crit, isDot);
-    this.burst(e.x, 0.8, e.z, 10031377, crit ? 10 : 5);
-    this.vfx?.burst(e.x, 0.85, e.z, 0x991111, crit ? 10 : 5, "blood");
+    this.burst(e.x, 0.8, e.z, crit ? 0xffcc55 : e.elite || e.boss ? 0xff6633 : 10031377, crit ? 14 : heavy ? 10 : 6);
+    if (crit) this.vfx?.critHit(e.x, e.z);
+    else if (heavy) this.vfx?.impact?.(e.x, 0.9, e.z, { heavy: true, color: e.elite || e.boss ? 0xff4422 : 0xaa1515 });
+    else this.vfx?.flash?.(e.x, e.z, 0xffaa88, 1.6, 0.06);
     this.audio.hit(crit);
     if (this.stat("lifeOnHit") && !isDot)
       this.hp = Math.min(this.maxHp, this.hp + this.stat("lifeOnHit") * 0.02);
     if (this.hasPower("furyOnHit") && this.hero?.classId === "barbarian")
       this.resource = Math.min(this.maxResource, this.resource + 3);
-    e.figure?.flash();
+    e.figure?.flash(crit || heavy);
+    // DI pack flinch — lean + squash away from the hero
+    if (!isDot && this.player && e.figure?.flinch) {
+      e.figure.flinch(this.player.x, this.player.z, e.x, e.z, crit || heavy);
+    }
     if (
       this.hasPower("eliteExecute") &&
       (e.elite || e.boss) &&
@@ -2857,12 +3216,28 @@ export class Veilbreak {
     this.hp -= dmg;
     this.floatNum(p.x, 2.1, p.z, Math.round(dmg), false, false, "you");
     this.trauma += 0.28;
+    this.hurtFlash = Math.max(this.hurtFlash, Math.min(0.55, 0.28 + dmg / 180));
+    this.hitstop = Math.max(this.hitstop, 0.028);
+    p.figure?.flash(dmg > 25);
+    // Brief lean away from the hit (attacker unknown — lean back from facing)
+    if (p.figure?.flinch) {
+      const fx = p.x - Math.sin(p.facing) * 1.2;
+      const fz = p.z - Math.cos(p.facing) * 1.2;
+      p.figure.flinch(fx, fz, p.x, p.z, dmg > 25);
+    }
+    this.post?.punch(0, 0.1);
     this.audio.hit(false);
     if (this.hp <= 0) {
       this.hp = 0;
       p.dead = true;
       p.vx = 0;
       p.vz = 0;
+      // Same shared ragdoll the rifts use for trash — hero collapses in place.
+      p.figure?.startRagdoll?.(
+        -Math.sin(p.facing || 0),
+        -Math.cos(p.facing || 0),
+        true,
+      );
       this.releaseInput();
       this.screen = "dead";
       this.audio.death();
@@ -2873,6 +3248,18 @@ export class Veilbreak {
     if (e.dead) return;
     e.dead = true;
     e.corpse = true;
+    // Shared ragdoll: flop away from the hero (or random if no player).
+    if (e.figure?.startRagdoll) {
+      const px = this.player?.x ?? e.x;
+      const pz = this.player?.z ?? e.z;
+      let dx = e.x - px;
+      let dz = e.z - pz;
+      if (Math.hypot(dx, dz) < 0.05) {
+        dx = Math.sin(e.facing || 0);
+        dz = Math.cos(e.facing || 0);
+      }
+      e.figure.startRagdoll(dx, dz, !!(e.elite || e.boss));
+    }
     const h = this.hero;
     const def = MONSTERS[e.monsterId ?? ""] ?? MONSTERS.skeleton;
     h.stats.kills += 1;
@@ -2887,23 +3274,36 @@ export class Veilbreak {
     );
     if (leveled) this.toast(`Level ${h.level}`);
     if (paragon) this.toast(`Paragon ${h.paragon}`);
-    this.dropGold(e.x, e.z, 4 + h.level + (e.elite ? 20 : 0));
+    // Gold: always on elite/boss; trash sometimes drops a fatter pile (less floor clutter)
+    if (e.elite || e.boss || this.rng.chance(0.55))
+      this.dropGold(
+        e.x,
+        e.z,
+        Math.round((4 + h.level + (e.elite ? 20 : 0)) * (e.elite || e.boss ? 1 : 1.6)),
+      );
     if (
       this.rng.chance(def.loot * DIFFICULTY[h.difficulty].magic) ||
       e.elite ||
       e.boss
     )
       this.dropLoot(e.x, e.z, !!e.elite, !!e.boss);
-    if (this.rng.chance(e.elite || e.boss ? 0.7 : 0.28))
+    if (this.rng.chance(e.elite || e.boss ? 0.32 : 0.08))
       this.dropGlobe(e.x, e.z);
-    this.burst(e.x, 1, e.z, 7803153, e.elite || e.boss ? 36 : 22);
+    this.burst(e.x, 1, e.z, 7803153, e.elite || e.boss ? 42 : 24);
     this.vfx?.death(e.x, e.z, !!e.elite, !!e.boss);
-    this.trauma += e.elite || e.boss ? 0.45 : 0.12;
+    this.trauma = Math.min(1.2, this.trauma + (e.boss ? 0.62 : e.elite ? 0.48 : 0.16));
     if (e.elite || e.boss) {
-      this.post?.punch(0.0026, 0.16);
-      this.hitstop = Math.max(this.hitstop, 0.032);
+      this.post?.punch(0.0026, e.boss ? 0.28 : 0.2);
+      this.hitstop = Math.max(this.hitstop, e.boss ? 0.08 : 0.055);
+      if (this.player) this.camKick(e.x - this.player.x, e.z - this.player.z, e.boss ? 0.2 : 0.14);
+    } else {
+      // Trash pops still land — short hitch so packs feel chunky
+      this.hitstop = Math.max(this.hitstop, 0.028);
+      this.post?.punch(0, 0.08);
     }
-    const extra = e.boss ? 4 + this.rng.int(0, 2) : e.elite ? 2 + this.rng.int(0, 2) : this.rng.chance(0.55) ? 1 : 0;
+    e.figure?.flash?.(!!e.elite || !!e.boss);
+    // Extra drops only for elites/bosses — trash never multi-drops (readable combat)
+    const extra = e.boss ? 1 + this.rng.int(0, 1) : e.elite ? (this.rng.chance(0.55) ? 1 : 0) : 0;
     for (let i = 0; i < extra; i++) this.dropLoot(e.x, e.z, !!e.elite, !!e.boss);
     if (e.boss && !this.level?.isRift && !this.level?.isTown)
       this.dropLoot(e.x, e.z, true, true, "legendary");
@@ -2935,7 +3335,8 @@ export class Veilbreak {
       if (e.monsterId === "flamechorus") h.act = Math.max(h.act, 4);
     }
     if (this.rift?.active && !e.boss) this.rift.progress += e.elite ? 4 : 1;
-    this.audio.death();
+    if (e.elite || e.boss) this.audio.eliteDeath();
+    else this.audio.death();
     e.corpseT = 8;
     if (e.sprite) {
       const m = e.sprite.material;
@@ -3026,8 +3427,11 @@ export class Veilbreak {
     stand.position.set(e.x, 0, e.z);
     this.scene.add(stand);
     e.mesh = stand;
-    const beam = this.vfx?.lootShaft(e.x, e.z, col, rarity);
-    if (beam) e.beam = beam.mesh;
+    // Shaft beams only for magic+ — whites stay quiet on the floor
+    if (rarity !== "normal") {
+      const beam = this.vfx?.lootShaft(e.x, e.z, col, rarity);
+      if (beam) e.beam = beam.mesh;
+    }
     if (rarity === "legendary" || rarity === "set" || rarity === "rare") {
       const l = new THREE.PointLight(col, rarity === "legendary" ? 16 : 8, 8, 1.5);
       l.position.set(e.x, 1.4, e.z);
@@ -3037,7 +3441,10 @@ export class Veilbreak {
     if (rarity === "legendary" || rarity === "set") {
       this.legendaryFlash = item.name;
       this.flashT = 1.4;
-      this.post?.punch(0.003, 0.2);
+      // DI legendary event: freeze ~4 frames, gold punch, tall beam (already spawned)
+      this.hitstop = Math.max(this.hitstop, 0.07);
+      this.trauma = Math.min(1.25, this.trauma + 0.55);
+      this.post?.punch(0.0045, 0.32);
       this.audio.legendary();
     }
     this.ents.push(e);
@@ -3106,8 +3513,8 @@ export class Veilbreak {
     this.burst(e.x, 0.8, e.z, 11171652, 14);
     this.vfx?.shatter(e.x, e.z);
     this.audio.hit(false);
-    if (this.rng.chance(0.55)) this.dropGold(e.x, e.z, 6 + this.hero.level);
-    if (this.rng.chance(0.4)) this.dropGlobe(e.x, e.z);
+    if (this.rng.chance(0.35)) this.dropGold(e.x, e.z, 8 + this.hero.level);
+    if (this.rng.chance(0.18)) this.dropGlobe(e.x, e.z);
     if (e.mesh) this.scene.remove(e.mesh);
     if (e.sprite) this.scene.remove(e.sprite);
     if (e.shadow) this.scene.remove(e.shadow);
@@ -3125,9 +3532,9 @@ export class Veilbreak {
     if (e.sprite) e.sprite.visible = false;
     this.ents.push(e);
   }
-  fxSlash(x, z) {
+  fxSlash(x, z, heavy = false) {
     const p = this.player;
-    this.vfx?.slash(x, z, p?.facing ?? 0);
+    this.vfx?.slash(x, z, p?.facing ?? 0, { heavy });
   }
   burst(x, y, z, color, n) {
     if (this.reduced) return;
@@ -3173,7 +3580,7 @@ export class Veilbreak {
   }
   floatNum(x, y, z, n, crit, _dot, kind) {
     if (!this.save.settings.numbers) return;
-    if (this.numbers.length >= 12) this.numbers.shift();
+    if (this.numbers.length >= 18) this.numbers.shift();
     const text =
       kind === "dodge"
         ? "dodge"
@@ -3181,12 +3588,16 @@ export class Veilbreak {
           ? String(-n)
           : kind === "heal"
             ? "+" + n
-            : String(n);
+            : crit
+              ? String(n) + "!"
+              : String(n);
+    // Slight lateral jitter so stacked hits stay readable
+    const jitter = (Math.random() - 0.5) * 0.35;
     this.numbers.push({
-      x,
+      x: x + jitter,
       y,
-      z,
-      t: crit ? 0.9 : 0.65,
+      z: z + (Math.random() - 0.5) * 0.25,
+      t: crit ? 1.2 : kind === "heal" ? 0.85 : 0.68,
       text,
       color:
         kind === "you"
@@ -3194,9 +3605,10 @@ export class Veilbreak {
           : kind === "heal"
             ? "#7dff8a"
             : crit
-              ? "#ffa64d"
+              ? "#ffe066"
               : "#f4efe4",
       crit: crit || kind === "heal",
+      big: !!crit,
     });
   }
   nearestEnemy(r) {
@@ -3240,8 +3652,8 @@ export class Veilbreak {
       const locked = e.elite && (e.knockLock ?? 0) > 0;
       if (!locked) {
         if (extra?.knock) {
-          e.x += fx * extra.knock * 0.12;
-          e.z += fz * extra.knock * 0.12;
+          e.x += fx * extra.knock * 0.26;
+          e.z += fz * extra.knock * 0.26;
         }
         if (extra?.stun) this.applyCC(e, "stun", extra.stun);
         if (e.elite && (extra?.knock || extra?.stun)) e.knockLock = 3;
@@ -3445,7 +3857,7 @@ export class Veilbreak {
   draw(dt) {
     const p = this.player;
     const off = this.camOff;
-    const wantView = this.baseViewSize * (this.aimingSlot >= 0 ? 1.06 : 1);
+    const wantView = this.baseViewSize * (this.aimingSlot >= 0 ? 1.07 : 1);
     this.viewSize = expLerp(this.viewSize, wantView, 8, dt);
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -3459,13 +3871,16 @@ export class Veilbreak {
     if (p && this.screen === "playing") {
       const shake = this.reduced
         ? 0
-        : this.trauma * this.trauma * (this.save.settings.shake ?? 0.7);
-      const ox = (Math.random() - 0.5) * shake * 1.1;
-      const oz = (Math.random() - 0.5) * shake * 1.1;
-      const followK = this.camLagT > 0 ? 3.4 : 6.6;
+        : Math.min(0.72, this.trauma * this.trauma) * (this.save.settings.shake ?? 0.7);
+      // Directional kick + soft random — DI punch, not nauseating
+      const ox = this.camKickX + (Math.random() - 0.5) * shake * 0.7;
+      const oz = this.camKickZ + (Math.random() - 0.5) * shake * 0.7;
+      // Premium follow: slight lag while moving/dashing, snappier when idle.
+      const moving = Math.hypot(p.vx ?? 0, p.vz ?? 0) > 0.4 || !!this.dash;
+      const followK = this.camLagT > 0 ? 3.8 : moving ? 5.6 : 8.5;
       this.camLagT = Math.max(0, this.camLagT - dt);
-      const lookX = expLerp(this.camera.position.x - off.x, p.x, followK, dt);
-      const lookZ = expLerp(this.camera.position.z - off.z, p.z, followK, dt);
+      const lookX = expLerp(this.camLookX || p.x, p.x, followK, dt);
+      const lookZ = expLerp(this.camLookZ || p.z, p.z, followK, dt);
       this.camLookX = lookX;
       this.camLookZ = lookZ;
       this.camera.position.set(lookX + off.x + ox, off.y, lookZ + off.z + oz);
@@ -3502,7 +3917,7 @@ export class Veilbreak {
         });
         e.figure.root.position.set(
           e.x + (e.figure.shakeX || 0),
-          (e.hopY || 0) + (e.figure.sinkY || 0),
+          (e.hopY || 0) + (e.figure.sinkY || 0) + (e.figure.bobY || 0),
           e.z,
         );
         if (e.attackT > 0) e.attackT -= dt;
@@ -3516,7 +3931,7 @@ export class Veilbreak {
       }
     }
     this.ents = this.ents.filter((e) => !e.dead || e.corpse);
-    if (this.channel?.id === "whirlwind" && p && Math.random() < 0.18)
+    if (this.channel?.id === "whirlwind" && p && Math.random() < 0.04)
       this.vfx?.whirl(p.x, p.z);
     this.vfx?.update(dt, t, p?.x ?? 0, p?.z ?? 0);
     if (this.post) this.post.render(dt);
@@ -3552,20 +3967,33 @@ export class Veilbreak {
       ctx.globalAlpha = 1;
     }
     for (const n of this.numbers) {
-      this.tmp.set(n.x, n.y + (0.65 - n.t) * 1.4, n.z);
+      const big = n.big || n.crit;
+      const rise = big ? 2.05 : 1.35;
+      this.tmp.set(n.x, n.y + (0.65 - n.t) * rise, n.z);
       this.tmp.project(this.camera);
       if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
         continue;
       const sx = (this.tmp.x * 0.5 + 0.5) * w;
       const sy = (-this.tmp.y * 0.5 + 0.5) * h;
-      ctx.globalAlpha = Math.min(1, n.t * 2);
-      ctx.font = `${n.crit ? 800 : 700} ${n.crit ? 24 * pr : 17 * pr}px Barlow, sans-serif`;
+      // Ease-out pop on spawn (DI crit punch)
+      const life = big ? 1.2 : 0.68;
+      const age = 1 - n.t / life;
+      const pop = big
+        ? 0.75 + Math.min(0.55, (1 - age) * 0.9) + Math.max(0, 0.25 - age * 1.2)
+        : 1;
+      ctx.globalAlpha = Math.min(1, n.t * 2.2);
+      ctx.font = `${big ? 900 : 700} ${Math.round((big ? 34 : 16) * pr * pop)}px Barlow, sans-serif`;
       ctx.textAlign = "center";
-      ctx.lineWidth = 4 * pr;
-      ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.lineWidth = (big ? 6 : 3.5) * pr;
+      ctx.strokeStyle = big ? "rgba(40,18,0,0.92)" : "rgba(0,0,0,0.82)";
       ctx.strokeText(n.text, sx, sy);
       ctx.fillStyle = n.color;
       ctx.fillText(n.text, sx, sy);
+      if (big && n.t > 0.75) {
+        ctx.globalAlpha = Math.min(0.6, (n.t - 0.75) * 2.2);
+        ctx.fillStyle = "#fff8d8";
+        ctx.fillText(n.text, sx, sy);
+      }
     }
     ctx.globalAlpha = 1;
     if (this.player) {
@@ -3614,18 +4042,7 @@ export class Veilbreak {
                 : "#ddd";
       ctx.fillText(e.item.name, sx, sy);
     }
-    for (const e of this.ents) {
-      if (e.kind !== "pickup" || e.item || e.dead) continue;
-      this.tmp.set(e.x, 1.05, e.z).project(this.camera);
-      if (this.tmp.x < -1.15 || this.tmp.x > 1.15 || this.tmp.y < -1.15 || this.tmp.y > 1.15)
-        continue;
-      const sx = (this.tmp.x * 0.5 + 0.5) * w;
-      const sy = (-this.tmp.y * 0.5 + 0.5) * h;
-      ctx.font = `600 ${11 * pr}px Barlow, sans-serif`;
-      ctx.textAlign = "center";
-      ctx.fillStyle = e.globe ? "#de624c" : "#f0d15a";
-      ctx.fillText(e.globe ? "Globe" : `+${Math.floor(e.gold ?? 0)} Gold`, sx, sy);
-    }
+    // Gold / globe world labels omitted — magnet + toasts cover them; HUD stays clean.
     for (const e of this.ents) {
       if (e.kind !== "npc" || !e.name) continue;
       if (!this.player) continue;
@@ -3694,7 +4111,7 @@ export class Veilbreak {
       maxCd: s.cooldown,
       charges: s.charges ? (this.skillCharges[s.id] ?? s.charges) : 0,
       maxCharges: s.charges ?? 0,
-      locked: locked && s.kind !== "channel",
+      locked: locked && s.kind !== "channel" && s.kind !== "dash",
       icon: iconFor(s),
       channel:
         this.channel?.id === s.id && this.channel.max
@@ -3702,22 +4119,27 @@ export class Veilbreak {
           : 0,
     });
     const tgt = this.target && !this.target.dead ? this.target : null;
+    // Loot HUD: gear only (gold/globes magnet + toast). Cap + rarity-sort.
+    const rarityRankHud = (r) =>
+      r === "legendary" || r === "set"
+        ? 4
+        : r === "rare"
+          ? 3
+          : r === "magic"
+            ? 2
+            : 1;
     const groundLoot = this.ents
-      .filter((e) => e.kind === "pickup" && !e.dead)
-      .slice(0, 8)
+      .filter((e) => e.kind === "pickup" && !e.dead && e.item)
+      .sort(
+        (a, b) =>
+          rarityRankHud(b.item?.rarity ?? "normal") -
+          rarityRankHud(a.item?.rarity ?? "normal"),
+      )
+      .slice(0, 5)
       .map((e) => ({
         uid: e.uid ?? e.item?.uid ?? String(e.id),
-        name: e.globe
-          ? "Health Globe"
-          : e.gold
-            ? `+${Math.floor(e.gold)} Gold`
-            : (e.item?.name ?? "Loot"),
-        rarity: e.globe
-          ? "globe"
-          : e.gold
-            ? "gold"
-            : (e.item?.rarity ?? "normal"),
-        gold: e.gold,
+        name: e.item?.name ?? "Loot",
+        rarity: e.item?.rarity ?? "normal",
       }));
     return {
       screen: this.screen,
@@ -3801,8 +4223,11 @@ export class Veilbreak {
       combatRating: h ? 80 + h.level * 12 + this.stat("str") : 0,
       channel: this.channel,
       lowHp: this.maxHp > 0 && this.hp / this.maxHp < 0.28,
+      hurtFlash: this.hurtFlash,
       portrait: cls.portrait,
       pc: this.pc,
+      autoCombat: this.autoCombat,
+      graphics: this.save.settings.graphics ?? "max",
     };
   }
   minimap() {

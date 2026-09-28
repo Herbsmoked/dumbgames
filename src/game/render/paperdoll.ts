@@ -1,10 +1,13 @@
 import * as THREE from "three";
-import type { Item, Slot } from "../types";
-import { FigureFactory } from "./figure";
+import type { ClassId, Item, Slot } from "../types";
+import { FigureFactory, figureKindFor } from "./figure";
 import type { TextureKit } from "./textures";
 import type { Quality } from "./quality";
 
-/** Small studio WebGL view of the hero for the inventory paperdoll. */
+/**
+ * Inventory studio view of the same 3D hero used in town and rifts.
+ * Shares FigureFactory (and thus mesh recipes / materials) with the world.
+ */
 export class PaperdollView {
   renderer: THREE.WebGLRenderer;
   scene = new THREE.Scene();
@@ -13,9 +16,16 @@ export class PaperdollView {
   figure: ReturnType<FigureFactory["create"]> | null = null;
   yaw = 0.22;
   private ro: ResizeObserver | null = null;
+  private ownsFactory: boolean;
 
-  constructor(canvas: HTMLCanvasElement, kit: TextureKit, quality: Quality) {
-    this.factory = new FigureFactory(kit, quality);
+  constructor(
+    canvas: HTMLCanvasElement,
+    kit: TextureKit,
+    quality: Quality,
+    sharedFactory?: FigureFactory | null,
+  ) {
+    this.ownsFactory = !sharedFactory;
+    this.factory = sharedFactory ?? new FigureFactory(kit, quality);
     const rect = canvas.getBoundingClientRect();
     const w = Math.max(64, Math.floor(rect.width) || canvas.clientWidth || 280);
     const h = Math.max(64, Math.floor(rect.height) || canvas.clientHeight || 420);
@@ -60,12 +70,20 @@ export class PaperdollView {
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = 0.01;
     this.scene.add(floor);
-    this.figure = this.factory.create("barbarian", 1.0, false, false);
-    this.figure.root.position.set(0, 0, 0);
-    this.scene.add(this.figure.root);
+    this.setClass("barbarian");
     this.ro = new ResizeObserver(() => this.fit(canvas));
     this.ro.observe(canvas);
     this.fit(canvas);
+  }
+
+  /** Rebuild doll from the same kind recipe the world hero uses. */
+  setClass(classId: ClassId | string) {
+    const kind = figureKindFor(String(classId));
+    if (this.figure?.kind === kind) return;
+    if (this.figure) this.scene.remove(this.figure.root);
+    this.figure = this.factory.create(kind, 1.0, false, false);
+    this.figure.root.position.set(0, 0, 0);
+    this.scene.add(this.figure.root);
   }
 
   private fit(canvas: HTMLCanvasElement) {
@@ -110,12 +128,17 @@ export class PaperdollView {
   dispose() {
     this.ro?.disconnect();
     this.ro = null;
+    if (this.figure) {
+      this.scene.remove(this.figure.root);
+      this.figure = null;
+    }
     try {
       this.renderer.forceContextLoss?.();
     } catch {
       /* ignore */
     }
     this.renderer.dispose();
-    this.figure = null;
+    // Do not dispose a shared world factory — only a doll-owned one would need it.
+    void this.ownsFactory;
   }
 }

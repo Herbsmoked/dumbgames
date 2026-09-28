@@ -228,6 +228,7 @@ export interface SaveData {
     music: number;
     sfx: number;
     autoLoot: "off" | "white" | "blue" | "yellow" | "all";
+    graphics: "auto" | "low" | "high" | "max";
   };
   season: { id: number; name: string; challenges: Record<string, number> };
   riftBest: Record<string, number>;
@@ -344,6 +345,9 @@ export interface UiSnapshot {
   combatRating: number;
   channel: { id: string; t: number; max: number } | null;
   lowHp: boolean;
+  hurtFlash: number;
   portrait: string;
   pc: boolean;
+  autoCombat: boolean;
+  graphics: "auto" | "low" | "high" | "max";
 }

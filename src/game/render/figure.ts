@@ -2,6 +2,7 @@ import * as THREE from "three";
 import type { TextureKit } from "./textures";
 import type { Quality } from "./quality";
 import type { Item, Slot } from "../types";
+import { FigureRagdoll } from "./ragdoll";
 
 export type FigureKind =
   | "barbarian"
@@ -140,12 +141,29 @@ export class Figure {
   flashMats: THREE.MeshStandardMaterial[] = [];
   attackT = 0;
   hitFlash = 0;
+  hitIntense = false;
   dissolve = 1;
   deadT = 0;
   /** Local hit-shake. Never written into world X — the engine places the actor. */
   shakeX = 0;
   /** Death sink, applied by the engine on top of world Y. */
   sinkY = 0;
+  /** DI-style lean/squash after a connect. */
+  flinchT = 0;
+  flinchMax = 0.16;
+  flinchLeanX = 0;
+  flinchLeanZ = 0;
+  squash = 0;
+  /** Shared town/rift death sim — limb flop + tip, no physics engine. */
+  ragdoll = new FigureRagdoll();
+  /** Last death impulse (world XZ), used if update sees dead before startRagdoll. */
+  private deathIx = 0;
+  private deathIz = 1;
+  /** Visual facing (blended) — gameplay facing stays instant in the engine. */
+  private faceY: number | null = null;
+  /** Walk bob applied by the engine on top of hopY (dash peak). */
+  bobY = 0;
+  private attackDur = 0.36;
   private cloakX = 0.1;
   private walk = 0;
   iceShell: THREE.Mesh | null = null;
@@ -160,8 +178,31 @@ export class Figure {
     this.root.add(this.gear);
   }
 
-  playAttack() {
-    this.attackT = 0.32;
+  playAttack(heavy = false) {
+    // DI wind-up → strike → recover (anticipation sells weight)
+    this.attackDur = heavy ? 0.42 : 0.36;
+    this.attackT = this.attackDur;
+  }
+
+  /** Lean away from the attacker + squash — pack flinch read. */
+  flinch(fromX: number, fromZ: number, myX: number, myZ: number, intense = false) {
+    let dx = myX - fromX;
+    let dz = myZ - fromZ;
+    const m = Math.hypot(dx, dz) || 1;
+    dx /= m;
+    dz /= m;
+    this.flinchLeanX = dx;
+    this.flinchLeanZ = dz;
+    this.flinchMax = intense ? 0.22 : 0.14;
+    this.flinchT = this.flinchMax;
+    this.squash = Math.max(this.squash, intense ? 0.9 : 0.55);
+  }
+
+  /** Kick the shared ragdoll (town + rifts use the same Figure path). */
+  startRagdoll(impulseX: number, impulseZ: number, intense = false) {
+    this.deathIx = impulseX;
+    this.deathIz = impulseZ;
+    this.ragdoll.start(this.parts, this.root, impulseX, impulseZ, intense);
   }
 
   /** Death clip must not leave a live ghost after a checkpoint revive. */
@@ -170,9 +211,20 @@ export class Figure {
     this.dissolve = 1;
     this.sinkY = 0;
     this.shakeX = 0;
+    this.hitFlash = 0;
+    this.hitIntense = false;
     this.attackT = 0;
+    this.flinchT = 0;
+    this.squash = 0;
+    this.flinchLeanX = 0;
+    this.flinchLeanZ = 0;
+    this.ragdoll.reset(this.parts, this.root);
+    this.faceY = null;
+    this.bobY = 0;
+    this.walk = 0;
     this.root.rotation.x = 0;
-    this.root.scale.y = 1;
+    this.root.rotation.z = 0;
+    this.root.scale.set(1, 1, 1);
     this.root.traverse((o) => {
       const mesh = o as THREE.Mesh;
       const mat = mesh.material as THREE.MeshStandardMaterial | undefined;
@@ -183,8 +235,10 @@ export class Figure {
     });
   }
 
-  flash() {
-    this.hitFlash = 0.14;
+  flash(intense = false) {
+    this.hitFlash = intense ? 0.22 : 0.16;
+    this.hitIntense = intense;
+    this.squash = Math.max(this.squash, intense ? 0.7 : 0.4);
   }
 
   glow(color: number, t: number) {
@@ -236,16 +290,33 @@ export class Figure {
     const dt = pose.dt;
     this.shakeX = 0;
     this.sinkY = 0;
-    if (pose.whirlwind) this.root.rotation.y += dt * 16;
-    else this.root.rotation.y = pose.facing + Math.PI;
+    this.bobY = 0;
+    if (pose.whirlwind) {
+      this.root.rotation.y += dt * 16;
+      this.faceY = this.root.rotation.y;
+    } else {
+      const want = pose.facing + Math.PI;
+      if (this.faceY == null) this.faceY = want;
+      // Snappy but smooth turn — ~12 Hz toward facing (DI kite, no moonwalk snap)
+      let d = want - this.faceY;
+      while (d > Math.PI) d -= Math.PI * 2;
+      while (d < -Math.PI) d += Math.PI * 2;
+      const turnK = 1 - Math.exp(-dt * 14);
+      this.faceY += d * turnK;
+      this.root.rotation.y = this.faceY;
+    }
     if (this.hitFlash > 0) {
       this.hitFlash -= dt;
-      const on = this.hitFlash > 0.04;
+      const on = this.hitFlash > (this.hitIntense ? 0.06 : 0.04);
+      const white = this.hitIntense ? 0xffe8d0 : 0xffd8b0;
+      const glow = this.hitIntense ? 0.72 : 0.42;
       for (const m of this.flashMats) {
-        m.emissive.setHex(on ? 0xfff2e0 : 0x000000);
-        m.emissiveIntensity = on ? 0.85 : (m.userData.emi0 ?? 0);
+        m.emissive.setHex(on ? white : 0x000000);
+        m.emissiveIntensity = on ? glow : (m.userData.emi0 ?? 0);
       }
-      this.shakeX = Math.sin(this.hitFlash * 48) * 0.035;
+      const amp = this.hitIntense ? 0.07 : 0.045;
+      this.shakeX = Math.sin(this.hitFlash * 56) * amp;
+      if (this.hitFlash <= 0) this.hitIntense = false;
     }
     if (this.glowT > 0) {
       this.glowT -= dt;
@@ -257,9 +328,13 @@ export class Figure {
     if (this.iceShell) this.iceShell.visible = pose.freeze;
     if (pose.dead) {
       this.deadT += dt;
-      const k = Math.min(1, this.deadT / 0.5);
-      this.root.rotation.x = k * 1.25;
-      this.sinkY = -k * 0.18;
+      if (!this.ragdoll.active) {
+        // Late start if engine marked dead without an explicit impulse.
+        this.ragdoll.start(this.parts, this.root, this.deathIx || 0, this.deathIz || 1, false);
+      }
+      this.root.scale.x = 1;
+      this.root.scale.z = 1;
+      this.sinkY = this.ragdoll.update(this.root, dt, this.deadT);
       if (this.deadT > 8) {
         this.dissolve = Math.max(0, this.dissolve - dt * 0.7);
         this.root.scale.y = Math.max(0.05, this.dissolve);
@@ -275,8 +350,20 @@ export class Figure {
       }
       return;
     }
+    if (this.ragdoll.active) this.ragdoll.reset(this.parts, this.root);
     this.deadT = 0;
-    this.root.rotation.x = 0;
+    // Flinch lean + squash decay (DI pack reaction)
+    if (this.flinchT > 0) this.flinchT = Math.max(0, this.flinchT - dt);
+    this.squash = Math.max(0, this.squash - dt * 4.5);
+    const flinchK = this.flinchMax > 0 ? this.flinchT / this.flinchMax : 0;
+    const lean = flinchK * flinchK * 0.38;
+    this.root.rotation.x = this.flinchLeanZ * lean;
+    this.root.rotation.z = -this.flinchLeanX * lean;
+    const sq = this.squash * 0.14;
+    const sy = Math.max(0.82, 1 - sq);
+    const sxz = Math.sqrt(1 / sy);
+    this.root.scale.set(sxz, sy, sxz);
+
     const torso = this.parts.torso;
     const lThigh = this.parts.lThigh;
     const rThigh = this.parts.rThigh;
@@ -291,43 +378,84 @@ export class Figure {
     const rWing = this.parts.rWing;
     if (pose.attacking || this.attackT > 0) {
       this.attackT = Math.max(0, this.attackT - dt);
-      const u = 1 - this.attackT / 0.32;
-      const swing = u < 0.4 ? u / 0.4 : 1 - (u - 0.4) / 0.6;
-      if (rArm) rArm.rotation.x = -2.05 * swing;
-      if (lArm) lArm.rotation.x = 0.35 * swing;
-      if (weapon) weapon.rotation.z = -0.55 * swing;
-      if (torso) torso.rotation.x = -0.12 * swing;
+      const dur = this.attackDur || 0.36;
+      const u = 1 - this.attackT / dur;
+      // Wind-up → strike → follow-through
+      let swing = 0;
+      let wind = 0;
+      if (u < 0.22) {
+        wind = u / 0.22;
+        swing = -0.35 * wind;
+      } else if (u < 0.55) {
+        const s = (u - 0.22) / 0.33;
+        swing = -0.35 + 1.55 * s;
+        wind = 1 - s;
+      } else {
+        const s = (u - 0.55) / 0.45;
+        swing = 1.2 * (1 - s) + 0.15 * s;
+      }
+      if (rArm) rArm.rotation.x = -2.15 * Math.max(0, swing) - 0.55 * Math.max(0, wind);
+      if (lArm) lArm.rotation.x = 0.4 * Math.max(0, swing) - 0.25 * Math.max(0, wind);
+      if (weapon) weapon.rotation.z = -0.65 * Math.max(0, swing) + 0.35 * Math.max(0, wind);
+      if (torso) {
+        torso.rotation.x = -0.18 * Math.max(0, swing) + 0.12 * Math.max(0, wind);
+        torso.rotation.y = 0.22 * Math.max(0, swing);
+      }
+      // Attack squash: stretch on strike, squat on wind-up
+      const atkSq = wind > 0.2 ? 0.35 * wind : Math.max(0, swing) * 0.55;
+      this.squash = Math.max(this.squash, atkSq);
     } else if (rArm) {
       rArm.rotation.x *= Math.max(0, 1 - dt * 8);
-      if (torso) torso.rotation.x *= Math.max(0, 1 - dt * 8);
+      if (torso) {
+        torso.rotation.x *= Math.max(0, 1 - dt * 8);
+        torso.rotation.y *= Math.max(0, 1 - dt * 8);
+      }
     }
     if (pose.moving) {
-      this.walk += dt * (6.4 + pose.speed * 0.85);
+      // Cadence scales with speed; clamp so sprint doesn't look like a blender.
+      const cad = 5.6 + Math.min(7.5, pose.speed * 0.95);
+      this.walk += dt * cad;
       const s = Math.sin(this.walk);
       const c = Math.cos(this.walk);
-      if (lThigh) lThigh.rotation.x = s * 0.78;
-      if (rThigh) rThigh.rotation.x = -s * 0.78;
-      if (lShin) lShin.rotation.x = Math.max(0, -c) * 0.5;
-      if (rShin) rShin.rotation.x = Math.max(0, c) * 0.5;
-      if (lArm && this.attackT <= 0) lArm.rotation.x = -s * 0.58;
-      if (rArm && this.attackT <= 0 && !pose.whirlwind) rArm.rotation.x = s * 0.48;
+      const amp = Math.min(1, 0.35 + pose.speed * 0.12);
+      // Foot plant: shin folds on the planted side, thigh drives the swing.
+      if (lThigh) lThigh.rotation.x = s * 0.82 * amp;
+      if (rThigh) rThigh.rotation.x = -s * 0.82 * amp;
+      if (lShin) lShin.rotation.x = Math.max(0, -c) * 0.62 * amp + Math.max(0, s) * 0.12;
+      if (rShin) rShin.rotation.x = Math.max(0, c) * 0.62 * amp + Math.max(0, -s) * 0.12;
+      // Arms counter-swing only when not mid-attack.
+      if (lArm && this.attackT <= 0) lArm.rotation.x = -s * 0.62 * amp;
+      if (rArm && this.attackT <= 0 && !pose.whirlwind) rArm.rotation.x = s * 0.52 * amp;
+      // Weight bob + brief hop at plant (synced to |sin|)
+      const plant = Math.abs(s);
+      const bob = plant * plant * 0.055 * amp;
+      this.bobY = bob;
       if (torso) {
-        torso.position.y = (torso.userData.y0 ?? torso.position.y) + Math.abs(s) * 0.035;
-        torso.rotation.y = s * 0.08;
+        const y0 = torso.userData.y0 ?? torso.position.y;
+        torso.userData.y0 = y0;
+        torso.position.y = y0 + bob * 0.55;
+        if (this.attackT <= 0) torso.rotation.y = s * 0.1 * amp;
       }
-      this.cloakX = THREE.MathUtils.damp(this.cloakX, 0.48, 8, dt);
+      if (head) head.rotation.x = -bob * 0.35;
+      this.cloakX = THREE.MathUtils.damp(this.cloakX, 0.42 + amp * 0.2, 9, dt);
     } else {
-      this.walk += dt * 2;
-      const b = Math.sin(pose.time * 2.05) * 0.014;
+      this.walk += dt * 1.6;
+      const b = Math.sin(pose.time * 2.05) * 0.012;
+      this.bobY = 0;
       if (torso) {
-        torso.position.y = (torso.userData.y0 ?? torso.position.y) + b;
-        torso.rotation.y *= Math.max(0, 1 - dt * 6);
+        const y0 = torso.userData.y0 ?? torso.position.y;
+        torso.userData.y0 = y0;
+        torso.position.y = y0 + b;
+        torso.rotation.y *= Math.max(0, 1 - dt * 7);
       }
-      if (head) head.rotation.y = Math.sin(pose.time * 0.65) * 0.1;
-      if (lThigh) lThigh.rotation.x *= Math.max(0, 1 - dt * 8);
-      if (rThigh) rThigh.rotation.x *= Math.max(0, 1 - dt * 8);
-      if (lShin) lShin.rotation.x *= Math.max(0, 1 - dt * 8);
-      if (rShin) rShin.rotation.x *= Math.max(0, 1 - dt * 8);
+      if (head) {
+        head.rotation.y = Math.sin(pose.time * 0.65) * 0.1;
+        head.rotation.x *= Math.max(0, 1 - dt * 8);
+      }
+      if (lThigh) lThigh.rotation.x *= Math.max(0, 1 - dt * 9);
+      if (rThigh) rThigh.rotation.x *= Math.max(0, 1 - dt * 9);
+      if (lShin) lShin.rotation.x *= Math.max(0, 1 - dt * 9);
+      if (rShin) rShin.rotation.x *= Math.max(0, 1 - dt * 9);
       if (lArm && this.attackT <= 0) lArm.rotation.x = Math.sin(pose.time * 1.35) * 0.06;
       this.cloakX = THREE.MathUtils.damp(this.cloakX, 0.12, 6, dt);
     }
@@ -417,14 +545,24 @@ export class FigureFactory {
 
     if (elite || boss) {
       const vein = new THREE.MeshStandardMaterial({
-        color: 0xff3311,
-        emissive: 0xff2200,
-        emissiveIntensity: boss ? 1.8 : 1.2,
-        roughness: 0.35,
+        color: boss ? 0xff5522 : 0xffaa33,
+        emissive: boss ? 0xff2200 : 0xff8800,
+        emissiveIntensity: boss ? 2.2 : 1.65,
+        roughness: 0.3,
       });
       add(fig.root, box, vein, 0, h * 0.58, 0.18 * k, 0.07 * k, 0.7 * k, 0.04 * k, 0, 0, 0, false);
       add(fig.root, box, vein, -0.12 * k, h * 0.55, 0.16 * k, 0.04 * k, 0.45 * k, 0.03 * k, 0, 0, 0.4, false);
-      if (boss) add(fig.root, tor, vein, 0, h * 0.98, 0, 1.15 * k, 1.15 * k, 1.15 * k, Math.PI / 2);
+      add(fig.root, box, vein, 0.12 * k, h * 0.52, 0.16 * k, 0.04 * k, 0.4 * k, 0.03 * k, 0, 0, -0.35, false);
+      // Crown / halo so elites read at a glance (DI rare pack clarity)
+      const halo = new THREE.MeshStandardMaterial({
+        color: boss ? 0xff4422 : 0xffcc44,
+        emissive: boss ? 0xff2200 : 0xffaa22,
+        emissiveIntensity: boss ? 2.4 : 1.8,
+        roughness: 0.25,
+        transparent: true,
+        opacity: 0.9,
+      });
+      add(fig.root, tor, halo, 0, h * (boss ? 1.02 : 0.95), 0, (boss ? 1.25 : 0.95) * k, (boss ? 1.25 : 0.95) * k, (boss ? 1.25 : 0.95) * k, Math.PI / 2);
     }
 
     const ice = new THREE.MeshStandardMaterial({

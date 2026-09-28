@@ -59,8 +59,11 @@ const empty: UiSnapshot = {
   combatRating: 0,
   channel: null,
   lowHp: false,
+  hurtFlash: 0,
   portrait: "/game/portraits/barbarian.jpg",
   pc: typeof window === "undefined" ? true : isPc(),
+  autoCombat: false,
+  graphics: "max",
 };
 
 export function GameApp() {
@@ -165,6 +168,8 @@ export function GameApp() {
           onSetLoadout={(slot, id) => game.current?.setLoadoutSlot(slot, id)}
           onPaperdoll={(el) => game.current?.mountPaperdoll(el)}
           onDollYaw={(d) => game.current?.paperdollYaw(d)}
+          onQuest={() => game.current?.pathQuest()}
+          onGraphics={(t) => game.current?.setGraphics(t)}
         />
       )}
 
@@ -384,6 +389,8 @@ function Hud(props: {
   onSetLoadout: (slot: number, id: string) => void;
   onPaperdoll: (el: HTMLCanvasElement | null) => void;
   onDollYaw: (d: number) => void;
+  onQuest: () => void;
+  onGraphics: (t: "auto" | "low" | "high" | "max") => void;
 }) {
   const { ui, onPanel } = props;
   const hp = ui.maxHp ? ui.hp / ui.maxHp : 0;
@@ -391,6 +398,14 @@ function Hud(props: {
   return (
     <>
       {ui.lowHp && <div className="low-vignette" />}
+      {ui.hurtFlash > 0.02 && (
+        <div className="hurt-vignette" style={{ opacity: Math.min(1, ui.hurtFlash * 1.6) }} />
+      )}
+      {ui.autoCombat && (
+        <div className="pointer-events-none absolute right-3 top-24 z-10 rounded-sm border border-gold bg-ash/85 px-2 py-1 text-[10px] tracking-[0.2em] text-gold uppercase sm:top-28">
+          Auto · Z
+        </div>
+      )}
 
       <div className="pointer-events-none absolute left-3 top-3 z-10 flex items-start gap-2 sm:left-4 sm:top-4">
         <div className="relative">
@@ -474,28 +489,43 @@ function Hud(props: {
       )}
 
       <div className="pointer-events-none absolute left-3 top-24 z-10 max-w-[220px] sm:top-28">
-        <button type="button" className="quest-parchment pointer-events-auto rounded-sm px-3 py-2 text-left text-[11px] leading-snug" onClick={() => game.current?.pathQuest()}>
+        <button type="button" className="quest-parchment pointer-events-auto rounded-sm px-3 py-2 text-left text-[11px] leading-snug" onClick={() => props.onQuest()}>
           <p className="mb-0.5 text-[10px] tracking-widest text-gold uppercase">!</p>
           {ui.questText}
         </button>
       </div>
 
-      <div className="pointer-events-none absolute bottom-36 left-1/2 z-10 flex w-[min(280px,70vw)] -translate-x-1/2 flex-col items-center gap-1">
+      <div className="pointer-events-none absolute bottom-36 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-1">
         {ui.interact && (
           <button type="button" className="hand-btn pointer-events-auto flex items-center justify-center" onClick={props.onInteract} aria-label={ui.interact}>
             <Hand className="size-6 text-gold-hi" />
           </button>
         )}
-        {ui.groundLoot.map((g) => (
-          <button
-            key={g.uid}
-            type="button"
-            className={`loot-plate pointer-events-auto rounded-sm px-3 py-1.5 text-xs rarity-${g.rarity}`}
-            onClick={() => props.onLoot(g.uid)}
-          >
-            {g.name}
-          </button>
-        ))}
+      </div>
+      <div className="pointer-events-none absolute bottom-40 right-3 z-10 flex w-[min(200px,42vw)] flex-col items-stretch gap-1 sm:right-4">
+        {ui.groundLoot.length > 0 && (
+          <div className="loot-rail pointer-events-none flex max-h-[9.5rem] w-full flex-col items-stretch gap-0.5 overflow-y-auto">
+            {ui.groundLoot.length > 1 && (
+              <button
+                type="button"
+                className="loot-plate loot-all pointer-events-auto rounded-sm px-2.5 py-1 text-[10px] tracking-[0.18em] text-gold uppercase"
+                onClick={() => props.onLoot("__all__")}
+              >
+                Loot All · {ui.groundLoot.length}
+              </button>
+            )}
+            {ui.groundLoot.map((g) => (
+              <button
+                key={g.uid}
+                type="button"
+                className={`loot-plate pointer-events-auto truncate rounded-sm px-2.5 py-1 text-[11px] rarity-${g.rarity}`}
+                onClick={() => props.onLoot(g.uid)}
+              >
+                {g.name}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <SkillCluster ui={ui} pc={ui.pc} onSkill={props.onSkill} onSkillHold={props.onSkillHold} onPrimary={props.onPrimary} onUlt={props.onUlt} onPotion={props.onPotion} />
@@ -512,8 +542,8 @@ function Hud(props: {
       {ui.panel === "quests" && <Quests ui={ui} onClose={() => onPanel("none")} />}
       {ui.panel === "rifts" && <Rifts ui={ui} onRift={props.onRift} onClose={() => onPanel("none")} />}
       {ui.panel === "bounties" && <Bounties onClose={() => onPanel("none")} />}
-      {ui.panel === "pause" && <PauseMenu ui={ui} onDiff={props.onDiff} onParagon={props.onParagon} onClose={() => onPanel("none")} />}
-      {ui.panel === "map" && <PauseMenu ui={ui} onDiff={props.onDiff} onParagon={props.onParagon} onClose={() => onPanel("none")} />}
+      {ui.panel === "pause" && <PauseMenu ui={ui} onDiff={props.onDiff} onParagon={props.onParagon} onGraphics={props.onGraphics} onClose={() => onPanel("none")} />}
+      {ui.panel === "map" && <PauseMenu ui={ui} onDiff={props.onDiff} onParagon={props.onParagon} onGraphics={props.onGraphics} onClose={() => onPanel("none")} />}
       {ui.panel === "dialogue" && ui.dialogue && (
         <div className="absolute inset-x-0 bottom-0 z-30 bg-gradient-to-t from-void via-void/95 to-transparent px-4 pb-8 pt-16">
           <div className="mx-auto max-w-2xl menu-sheet rounded-xl p-5">
@@ -1143,13 +1173,16 @@ function PauseMenu({
   ui,
   onDiff,
   onParagon,
+  onGraphics,
   onClose,
 }: {
   ui: UiSnapshot;
   onDiff: (d: UiSnapshot["difficulty"]) => void;
   onParagon: (k: "core" | "offense" | "defense" | "utility") => void;
+  onGraphics: (t: "auto" | "low" | "high" | "max") => void;
   onClose: () => void;
 }) {
+  const gfx = ui.graphics ?? "max";
   return (
     <Modal title="Pause" onClose={onClose}>
       <div className="grid gap-4 sm:grid-cols-2">
@@ -1172,6 +1205,22 @@ function PauseMenu({
               </button>
             ))}
           </div>
+        </div>
+        <div className="sm:col-span-2">
+          <p className="text-xs uppercase text-muted">Graphics</p>
+          <div className="mt-2 flex flex-wrap gap-1">
+            {(["max", "high", "auto", "low"] as const).map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={`rounded-md border px-2 py-1 text-xs capitalize ${gfx === t ? "border-bone" : "border-border"}`}
+                onClick={() => onGraphics(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1 text-[10px] text-faint">Max is default. Changing tier reloads so WebGL quality can rebuild.</p>
         </div>
       </div>
       <p className="mt-4 text-xs text-faint">Shake, numbers, and pickup live in the save. The veil does not pause for long.</p>

@@ -11,23 +11,85 @@ export type Quality = {
   env: boolean;
 };
 
-export function detectQuality(): Quality {
+export type GraphicsTier = "auto" | "low" | "high" | "max";
+
+/** Phone UA only — narrow preview iframes must NOT force low gfx. */
+function isPhoneUa(): boolean {
   const ua = typeof navigator !== "undefined" ? navigator.userAgent : "";
-  const mobile = /Mobi|Android|iPhone|iPad/i.test(ua) || (typeof window !== "undefined" && window.innerWidth < 820);
-  const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 8) : 8;
-  const low = mobile || cores <= 4;
+  return /Mobi|Android|iPhone|iPad/i.test(ua);
+}
+
+function isNarrowUi(): boolean {
+  return typeof window !== "undefined" && window.innerWidth < 820;
+}
+
+/** Absolute ceiling — used when settings.graphics === "max". */
+export function maxQuality(): Quality {
   const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
-  const mid = !low && (mobile || cores <= 6);
   return {
-    low,
-    mobile,
-    dpr: low ? Math.min(1, dpr) : Math.min(dpr, 2),
+    low: false,
+    mobile: isPhoneUa() || isNarrowUi(),
+    dpr: Math.min(Math.max(dpr, 1.5), 2.5),
     shadows: true,
-    shadowMap: low ? 512 : mid ? 1024 : 2048,
-    bloom: !low,
-    grain: !low,
-    particles: low ? 0.42 : 1,
-    maxLights: low ? 5 : 14,
-    env: !low,
+    shadowMap: 4096,
+    bloom: true,
+    grain: true,
+    particles: 1.45,
+    maxLights: 28,
+    env: true,
   };
+}
+
+export function lowQuality(): Quality {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return {
+    low: true,
+    mobile: true,
+    dpr: Math.min(1, dpr),
+    shadows: true,
+    shadowMap: 512,
+    bloom: false,
+    grain: false,
+    particles: 0.42,
+    maxLights: 5,
+    env: false,
+  };
+}
+
+export function highQuality(): Quality {
+  const dpr = typeof window !== "undefined" ? window.devicePixelRatio || 1 : 1;
+  return {
+    low: false,
+    mobile: isPhoneUa() || isNarrowUi(),
+    dpr: Math.min(dpr, 2),
+    shadows: true,
+    shadowMap: 2048,
+    bloom: true,
+    grain: true,
+    particles: 1.1,
+    maxLights: 18,
+    env: true,
+  };
+}
+
+/**
+ * Auto: phones / very weak CPUs get low; everything else gets high.
+ * Viewport width alone never drops quality (preview iframes are narrow).
+ */
+export function detectQuality(tier: GraphicsTier = "max"): Quality {
+  if (tier === "max") return maxQuality();
+  if (tier === "low") return lowQuality();
+  if (tier === "high") return highQuality();
+
+  const phone = isPhoneUa();
+  const cores = typeof navigator !== "undefined" ? (navigator.hardwareConcurrency ?? 8) : 8;
+  if (phone || cores <= 2) return lowQuality();
+  if (cores <= 4) {
+    const q = highQuality();
+    q.shadowMap = 1024;
+    q.particles = 0.85;
+    q.maxLights = 12;
+    return q;
+  }
+  return highQuality();
 }

@@ -22,6 +22,7 @@ export type Actions = {
   interact: boolean;
   interactJust: boolean;
   forceMove: boolean;
+  autoCombatJust: boolean;
   inv: boolean;
   invJust: boolean;
   pause: boolean;
@@ -31,10 +32,14 @@ export type Actions = {
 const SKILL_CODES = ["Digit1", "Digit2", "Digit3", "Digit4"];
 const SKILL_KEYS = ["1", "2", "3", "4"];
 
-function radial(x: number, y: number, dz = 0.18) {
+/** Stick reshape: deadzone + expo so walk→run feels intentional, full stick is snappy. */
+function radial(x: number, y: number, dz = 0.16) {
   const m = Math.hypot(x, y);
   if (m < dz) return { x: 0, y: 0 };
-  const s = ((m - dz) / (1 - dz)) / m;
+  const t = Math.min(1, (m - dz) / (1 - dz));
+  // Mild expo: small tilts = careful walk, outer ring = full run
+  const shaped = Math.pow(t, 0.85);
+  const s = shaped / m;
   return { x: x * s, y: y * s };
 }
 
@@ -47,6 +52,7 @@ export class Input {
   hudSkills = [false, false, false, false];
   hudUlt = false;
   hudPotion = false;
+  prevAutoKey = false;
   prev: Actions;
   actions: Actions;
   canvas: HTMLElement;
@@ -167,6 +173,9 @@ export class Input {
     const ultimate = has("KeyQ") || this.hudUlt || !!gp?.buttons[2]?.pressed;
     const interact = has("KeyE") || has("KeyG") || !!gp?.buttons[0]?.pressed;
     const forceMove = has("KeyF") || this.pointer.right;
+    const autoKey = has("KeyZ");
+    const autoCombatJust = autoKey && !this.prevAutoKey;
+    this.prevAutoKey = autoKey;
     const inv = has("KeyI") || has("Tab") || has("KeyC") || has("KeyB");
     const pause = has("Escape") || has("KeyP");
     const a: Actions = {
@@ -191,6 +200,7 @@ export class Input {
       interact,
       interactJust: false,
       forceMove,
+      autoCombatJust,
       inv,
       invJust: false,
       pause,
@@ -241,6 +251,7 @@ export class Input {
       interact: false,
       interactJust: false,
       forceMove: false,
+      autoCombatJust: false,
       inv: false,
       invJust: false,
       pause: false,

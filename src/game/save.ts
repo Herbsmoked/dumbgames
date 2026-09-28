@@ -44,7 +44,7 @@ function defaultSave(): SaveData {
     version: SAVE_VERSION,
     characters: [],
     active: 0,
-    settings: { shake: 0.7, numbers: true, autoPickup: 2.4, music: 0.35, sfx: 0.8, autoLoot: "yellow" },
+    settings: { shake: 0.7, numbers: true, autoPickup: 2.4, music: 0.35, sfx: 0.8, autoLoot: "yellow", graphics: "max" },
     season: { id: 1, name: SEASON_NAME, challenges: {} },
     riftBest: {},
     weekly: { id: weekId(), bounties: makeBounties(), cacheClaimed: false },
@@ -79,6 +79,7 @@ export function loadSave(): SaveData {
     }
     s.version = SAVE_VERSION;
     s.settings.autoLoot = s.settings.autoLoot ?? "yellow";
+    s.settings.graphics = s.settings.graphics ?? "max";
     for (const h of s.characters) {
       const c = CLASSES[h.classId];
       for (const sk of c.skills) {

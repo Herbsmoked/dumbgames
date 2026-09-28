@@ -76,19 +76,27 @@ export class PostPipeline {
   constructor(renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera, quality: Quality) {
     this.quality = quality;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.38;
+    // Tear wash: keep exposure modest so lava + flashes don't bleach combat
+    renderer.toneMappingExposure = quality.low ? 1.08 : 1.12;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.composer = new EffectComposer(renderer);
     this.composer.addPass(new RenderPass(scene, camera));
     if (quality.bloom) {
-      this.bloom = new UnrealBloomPass(new THREE.Vector2(window.innerWidth, window.innerHeight), 0.14, 0.2, 0.93);
+      // DI-clear bloom: only hottest emissives; hero/threats stay readable on Tear
+      const strength = quality.particles >= 1.3 ? 0.038 : 0.032;
+      this.bloom = new UnrealBloomPass(
+        new THREE.Vector2(window.innerWidth, window.innerHeight),
+        strength,
+        0.1,
+        0.988,
+      );
       this.composer.addPass(this.bloom);
     }
     this.grade = new ShaderPass(GradeShader);
-    this.grade.uniforms.uGrain.value = quality.grain ? 0.028 : 0.008;
-    this.grade.uniforms.uSharpen.value = quality.low ? 0.1 : 0.16;
-    this.grade.uniforms.uVignette.value = 0.12;
-    this.grade.uniforms.uExposure.value = 1.18;
+    this.grade.uniforms.uGrain.value = quality.grain ? (quality.particles >= 1.3 ? 0.034 : 0.028) : 0.008;
+    this.grade.uniforms.uSharpen.value = quality.low ? 0.1 : quality.particles >= 1.3 ? 0.2 : 0.16;
+    this.grade.uniforms.uVignette.value = quality.low ? 0.1 : 0.14;
+    this.grade.uniforms.uExposure.value = 1.06;
     this.composer.addPass(this.grade);
     this.fxaa = new FXAAPass();
     this.composer.addPass(this.fxaa);
@@ -107,16 +115,17 @@ export class PostPipeline {
 
   punch(_chroma = 0, pop = 0.1) {
     this.chromaT = 0;
-    this.popT = Math.max(this.popT, pop);
+    this.popT = Math.max(this.popT, Math.min(0.42, pop));
     this.grade.uniforms.uChroma.value = 0;
   }
 
   render(dt: number) {
     this.chromaT = 0;
-    this.popT = Math.max(0, this.popT - dt);
+    this.popT = Math.max(0, this.popT - dt * 1.35);
     this.grade.uniforms.uTime.value += dt;
     this.grade.uniforms.uChroma.value = 0;
-    this.grade.uniforms.uExposure.value = 1.18 + this.popT * 0.28;
+    // Brief exposure pop on heavy hits / kills — dampened for comfort
+    this.grade.uniforms.uExposure.value = 1.06 + this.popT * 0.22;
     this.composer.render();
   }
 }

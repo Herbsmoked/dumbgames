@@ -167,7 +167,7 @@ export function generateDungeon(opts: {
   const kinds: RoomKind[] = opts.isRift
     ? ["start", "combat", "elite", "boss"]
     : ["start", "combat", "elite", "combat", "boss"];
-  const spacing = 16;
+  const spacing = 12;  // tighter room cadence — DI pocket rhythm
   let x = 0,
     z = 0;
   const used = new Set<string>(["0,0"]);
@@ -220,9 +220,9 @@ export function generateDungeon(opts: {
   for (const r of rooms) {
     if (r.kind === "start") {
       props.push({ kind: "portal", x: r.x, z: r.z - r.d / 2 + 2 });
-      for (let i = 0; i < 9; i++) {
+      for (let i = 0; i < 5; i++) {
         const a = rng.next() * Math.PI * 2;
-        const rad = 2.2 + rng.next() * 3.4;
+        const rad = 2.2 + rng.next() * 3.2;
         spawns.push({ x: r.x + Math.cos(a) * rad, z: r.z + Math.sin(a) * rad, monster: rng.pick(mons) });
       }
       continue;
@@ -240,10 +240,11 @@ export function generateDungeon(opts: {
       props.push({ kind: "chest", x: r.x, z: r.z });
       if (r.kind === "secret") props.push({ kind: "chest", x: r.x + 2, z: r.z });
     }
-    const pack = r.kind === "elite" ? rng.int(8, 12) : r.kind === "event" ? rng.int(14, 20) : rng.int(10, 16);
+    // DI pocket packs — dense in-room, not corridor flood
+    const pack = r.kind === "elite" ? rng.int(6, 8) : r.kind === "event" ? rng.int(8, 11) : rng.int(6, 9);
     for (let i = 0; i < pack; i++) {
       const a = rng.next() * Math.PI * 2;
-      const rad = 1.5 + rng.next() * Math.min(r.w, r.d) * 0.28;
+      const rad = 1.8 + rng.next() * Math.min(r.w, r.d) * 0.32;
       const champ: ChampionAffix[] | undefined =
         r.kind === "elite" && i === 0
           ? [rng.pick([...CHAMPION_AFFIXES]), rng.chance(0.5) ? rng.pick([...CHAMPION_AFFIXES]) : "extraLife"]
@@ -260,6 +261,21 @@ export function generateDungeon(opts: {
       props.push({ kind: "shrine", x: r.x - 3.2, z: r.z, shrine: "damage" });
     if (r.kind === "combat" && rng.chance(0.4)) props.push({ kind: "chest", x: r.x + r.w / 2 - 2, z: r.z });
   }
+  // Hallway ambushes — DI corridor pressure between room pockets
+  for (let i = 0; i < halls.length; i++) {
+    const h = halls[i]!;
+    if (rng.chance(0.55)) {
+      const n = rng.int(2, 4);
+      for (let j = 0; j < n; j++) {
+        spawns.push({
+          x: h.x + (rng.next() - 0.5) * Math.min(3, h.w * 0.4),
+          z: h.z + (rng.next() - 0.5) * Math.min(3, h.d * 0.4),
+          monster: rng.pick(mons),
+        });
+      }
+    }
+  }
+
 
   let minx = Infinity,
     maxx = -Infinity,
@@ -282,8 +298,8 @@ export function generateDungeon(opts: {
     playerX: start.x,
     playerZ: start.z,
     bounds: { x: (minx + maxx) / 2, z: (minz + maxz) / 2, w: maxx - minx + 8, d: maxz - minz + 8 },
-    fog: opts.biome === "hell" ? 0.022 : opts.biome === "ice" ? 0.012 : 0.016,
-    ambient: opts.biome === "hell" ? 0.62 : 0.52,
+    fog: opts.biome === "hell" ? 0.034 : opts.biome === "ice" ? 0.014 : 0.018,
+    ambient: opts.biome === "hell" ? 0.48 : 0.52,
     seed: opts.seed,
     isRift: opts.isRift,
     riftTier: opts.riftTier,
@@ -342,10 +358,10 @@ export function generateMarches(seed = 7): Level {
   const spawns: Spawn[] = [];
   const packs = [12, 4, -6, -16];
   packs.forEach((z, pi) => {
-    const n = pi === 2 ? 8 : 6;
+    const n = pi === 2 ? 7 : 5;
     for (let i = 0; i < n; i++) {
       const a = rng.next() * Math.PI * 2;
-      const rad = 1.2 + rng.next() * 3.2;
+      const rad = 1.6 + rng.next() * 3.4;
       spawns.push({
         x: Math.cos(a) * rad,
         z: z + Math.sin(a) * rad * 0.65,

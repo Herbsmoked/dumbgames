@@ -203,7 +203,7 @@ export class TextureKit {
       }
       map.repeat.set(1, 1);
       let albedo = map;
-      if (k === "hell") albedo = brightenMap(map, 2.8, 0.12);
+      if (k === "hell") albedo = brightenMap(map, 0.82, 0.02);
       else if (k === "hide" || k === "dirt" || k === "roof") albedo = brightenMap(map, 1.85, 0.06);
       const bump = k === "hell" || k === "wall" || k === "floor" ? 3.4 : k === "hide" ? 2.8 : 2.2;
       const derived = this.quality.low ? { normal: undefined, rough: undefined, ao: undefined } : deriveMaps(albedo, bump);
@@ -260,7 +260,7 @@ export class TextureKit {
     this.mats.floor = std("floor", 0xddd0b8, 0.88, 0.04, { repeat: 8, nrm: 1.05 });
     this.mats.stone = std("stone", 0xd4c6b0, 0.86, 0.04, { repeat: 6, nrm: 0.85 });
     this.mats.wall = std("wall", 0xc8b8a4, 0.88, 0.05, { repeat: 2, nrm: 1.0 });
-    this.mats.hell = std("hell", 0xe8c8a8, 0.68, 0.08, { emissive: 0x5a1c08, emi: 0.2, repeat: 6, nrm: 1.05 });
+    this.mats.hell = std("hell", 0x4a3428, 0.78, 0.04, { emissive: 0x120604, emi: 0.03, repeat: 6, nrm: 1.05 });
     this.mats.hide = std("hide", 0xc46a48, 0.4, 0.1, { emissive: 0x4a1408, emi: 0.12, nrm: 1.0 });
     this.mats.ice = std("ice", 0xd4e4f0, 0.32, 0.14, { repeat: 5 });
     this.mats.dirt = std("dirt", 0xb08a70, 0.92, 0.02, { repeat: 6 });

@@ -126,9 +126,10 @@ export class WorldKit {
 
     const floorMat = this.kit.floorFor(level.biome).clone();
     if (hell) {
-      floorMat.color.setRGB(1.45, 1.12, 0.92);
-      floorMat.emissive = new THREE.Color(0x3a1408);
-      floorMat.emissiveIntensity = 0.18;
+      // Charcoal basalt — Tear AoEs/hero must not share lava orange
+      floorMat.color.setRGB(0.38, 0.26, 0.22);
+      floorMat.emissive = new THREE.Color(0x0c0402);
+      floorMat.emissiveIntensity = 0.02;
     }
     if (floorMat.map) {
       const rep = Math.max(5, Math.round(Math.max(level.bounds.w, level.bounds.d) / 5.5));
@@ -149,8 +150,8 @@ export class WorldKit {
     this.ground = ground;
     this.scene.add(ground);
 
-    this.hemi = new THREE.HemisphereLight(hell ? 0xffc8a0 : ice ? 0xc8d8e8 : 0xe8e4dc, hell ? 0x4a2214 : 0x2e261c, hell ? 1.05 : 1.12);
-    this.dir = new THREE.DirectionalLight(hell ? 0xffb07a : ice ? 0xd0dcec : 0xffe2c0, hell ? 1.45 : 1.58);
+    this.hemi = new THREE.HemisphereLight(hell ? 0xe8a888 : ice ? 0xc8d8e8 : 0xe8e4dc, hell ? 0x2a140e : 0x2e261c, hell ? 0.48 : 0.98);
+    this.dir = new THREE.DirectionalLight(hell ? 0xff9868 : ice ? 0xd0dcec : 0xffe2c0, hell ? 0.92 : 2.05);
     this.dir.position.set(8, 14, 8);
     this.dir.castShadow = this.quality.shadows;
     this.dir.shadow.mapSize.set(this.quality.shadowMap, this.quality.shadowMap);
@@ -163,27 +164,27 @@ export class WorldKit {
     this.dir.shadow.camera.far = 60;
     this.dir.shadow.bias = -0.0006;
     this.dir.shadow.normalBias = 0.032;
-    this.dir.shadow.intensity = 0.48;
+    this.dir.shadow.intensity = 0.72;
     this.dir.shadow.radius = 3.2;
     this.dir.shadow.camera.updateProjectionMatrix();
-    this.rim = new THREE.DirectionalLight(hell ? 0xff6644 : 0xe8d0a0, 0.72);
+    this.rim = new THREE.DirectionalLight(hell ? 0xff5533 : 0xe8d0a0, hell ? 0.32 : 1.05);
     this.rim.position.set(-8, 7, -8);
-    const amb = new THREE.AmbientLight(hell ? 0x3a2418 : 0x3c342c, Math.max(0.58, level.ambient * 1.35));
+    const amb = new THREE.AmbientLight(hell ? 0x281810 : 0x3c342c, Math.max(0.28, level.ambient * (hell ? 0.62 : 0.85)));
     this.scene.add(this.hemi, this.dir, this.dir.target, this.rim, amb);
     this.lights.push(this.hemi, this.dir, this.rim, amb);
 
-    this.playerLight = new THREE.PointLight(0xffc090, 14, 13, 1.45);
+    this.playerLight = new THREE.PointLight(0xffc090, hell ? 9 : 18, hell ? 11 : 14, 1.45);
     this.playerLight.position.set(level.playerX, 2.4, level.playerZ);
     this.scene.add(this.playerLight);
     this.lights.push(this.playerLight);
 
-    this.fillWarm = new THREE.PointLight(hell ? 0xff8844 : 0xffd2a8, 9, 16, 1.5);
+    this.fillWarm = new THREE.PointLight(hell ? 0xff6633 : 0xffd2a8, hell ? 2.0 : 9, hell ? 12 : 16, 1.6);
     this.fillWarm.position.set(level.playerX + 4.2, 3.4, level.playerZ + 3.2);
     this.scene.add(this.fillWarm);
     this.lights.push(this.fillWarm);
 
     if (!this.quality.low) {
-      this.fillCool = new THREE.PointLight(hell ? 0xff6622 : 0xa8b8c8, 5.5, 15, 1.5);
+      this.fillCool = new THREE.PointLight(hell ? 0x882244 : 0xa8b8c8, hell ? 1.1 : 5.5, hell ? 11 : 15, 1.6);
       this.fillCool.position.set(level.playerX - 4.4, 3.0, level.playerZ - 3.4);
       this.scene.add(this.fillCool);
       this.lights.push(this.fillCool);
@@ -510,8 +511,8 @@ export class WorldKit {
   }
 
   private dressDungeon(level: Level, vfx: VfxWorld, trim: THREE.Material, hell: boolean, ice: boolean) {
-    const glowCol = ice ? 0x88ccee : hell ? 0xff6622 : 0xffd8a0;
-    const glowEmi = ice ? 0x226688 : hell ? 0xff3311 : 0xffcc88;
+    const glowCol = ice ? 0x88ccee : hell ? 0xaa3322 : 0xffd8a0;
+    const glowEmi = ice ? 0x226688 : hell ? 0x661118 : 0xffcc88;
     const glow = new THREE.MeshStandardMaterial({ color: glowCol, emissive: glowEmi, emissiveIntensity: 1.15, roughness: 0.4 });
     for (const r of level.rooms) {
       const inset = 1.05;
@@ -547,11 +548,12 @@ export class WorldKit {
         this.put(box, this.kit.mats.wall!, r.x - r.w * 0.22, 0.35, r.z - r.d * 0.18, 0.9, 0.7, 0.7, 0, -0.4, 0);
       }
       if (hell) {
+        // Deep crimson — distinct from orange threat telegraphs
         const lava = new THREE.MeshStandardMaterial({
-          color: 0xc42810,
-          emissive: 0xff3311,
-          emissiveIntensity: 0.7,
-          roughness: 0.55,
+          color: 0x2a0610,
+          emissive: 0x881122,
+          emissiveIntensity: 0.14,
+          roughness: 0.72,
         });
         this.put(cyl, lava, r.x + 1.6, 0.03, r.z - 1.1, 1.5, 0.05, 1.0, 0, 0.4, 0, false);
         this.put(cyl, lava, r.x - 2.1, 0.025, r.z + 1.4, 1.0, 0.04, 1.6, 0, -0.5, 0, false);
